@@ -1,4 +1,4 @@
-name: Protect EXE
+name: Protect EXE(s)
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ on:
         default: '365'
         type: string
       embed_license:
-        description: 'Embed a license now? UNCHECK for first-run flow (customer gets HWID, you run Generate License, they drop license.key next to the launcher)'
+        description: 'Embed a license now? UNCHECK for first-run flow (customer gets HWID, you run Generate License, they drop license.key next to the EXE)'
         required: false
         default: true
         type: boolean
@@ -40,18 +40,6 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Find EXE in incoming/
-        id: find_exe
-        shell: pwsh
-        run: |
-          $exe = Get-ChildItem -Path ./incoming -File -Filter *.exe | Select-Object -First 1
-          if (-not $exe) {
-            Write-Error "No .exe file found in ./incoming/"
-            exit 1
-          }
-          Write-Output "exe_path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
-          Write-Output "Found: $($exe.FullName)"
-
       - name: Protect with loader
         env:
           LOADER_MASTER_SECRET: ${{ secrets.LOADER_MASTER_SECRET }}
@@ -60,18 +48,20 @@ jobs:
         shell: bash
         run: |
           set -e
-          EXE_PATH=$(find incoming -maxdepth 1 -type f -iname '*.exe' | head -n 1)
-          if [ -z "$EXE_PATH" ]; then
-            echo "::error::No .exe found in incoming/"
+          mapfile -t EXES < <(find incoming -maxdepth 1 -type f -iname '*.exe' | sort)
+          if [ ${#EXES[@]} -eq 0 ]; then
+            echo "::error::No .exe files found in incoming/"
             exit 1
           fi
-          echo "Found: $EXE_PATH"
+          echo "Found ${#EXES[@]} EXE(s):"
+          printf '  %s\n' "${EXES[@]}"
 
           CLEAN_HWID=$(printf '%s' "$HWID" | tr -d '[:space:]')
 
-          ARGS=(protect-exe "$EXE_PATH" -o ./protected)
+          ARGS=(protect-exe -o ./protected)
           ARGS+=(--customer "${{ github.event.inputs.customer_id }}")
           ARGS+=(--days "${{ github.event.inputs.expiry_days }}")
+          ARGS+=("${EXES[@]}")
 
           if [ "$EMBED_LICENSE" != "true" ]; then
             echo "[+] First-run flow: shipping WITHOUT an embedded license"
@@ -86,14 +76,36 @@ jobs:
 
           python -m build_tools.builder "${ARGS[@]}"
 
+      - name: Build single-file launcher
+        shell: bash
+        run: |
+          set -e
+          ARGS=(--onefile --noconsole --name SecureLauncher --clean
+                --distpath ./dist --workpath ./build_tmp --specpath ./build_tmp
+                --collect-all customtkinter)
+          for f in protected/payload_*.enc protected/payload_*.meta; do
+            [ -e "$f" ] || continue
+            ARGS+=(--add-data "$f;.")
+          done
+          pyinstaller "${ARGS[@]}" protected/SecureLauncher.py
+          echo "=== dist/ ==="
+          ls -la dist
+
       - name: Show protected output
         shell: pwsh
         run: |
           Get-ChildItem -Recurse ./protected | Select-Object FullName, Length | Format-Table -AutoSize
 
-      - name: Upload protected bundle
+      - name: Upload protected bundle (folder version)
         uses: actions/upload-artifact@v4
         with:
           name: protected-${{ github.event.inputs.customer_id }}
           path: protected/
+          retention-days: 30
+
+      - name: Upload single-file launcher
+        uses: actions/upload-artifact@v4
+        with:
+          name: SecureLauncher-${{ github.event.inputs.customer_id }}
+          path: dist/SecureLauncher.exe
           retention-days: 30
