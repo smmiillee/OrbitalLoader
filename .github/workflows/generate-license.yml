@@ -4,17 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       customer_id:
-        description: 'Customer name/ID'
+        description: 'Customer'
         required: true
       hardware_id:
-        description: 'Hardware ID from customer'
+        description: 'HWID'
         required: true
       expiry_days:
-        description: 'License validity (days)'
+        description: 'Sub Time (Days)'
         default: '365'
-      features:
-        description: 'Feature flags (space separated)'
-        default: 'basic'
 
 jobs:
   generate:
