@@ -6,9 +6,16 @@ on:
       customer_id:
         description: 'Customer ID for license'
         required: true
+        type: string
       expiry_days:
         description: 'License validity (days)'
         default: '365'
+        type: string
+      hardware_id:
+        description: "Customer's hardware ID (hardware_id.txt). Leave EMPTY to disable HW binding."
+        required: false
+        default: ''
+        type: string
 
 jobs:
   protect:
@@ -32,9 +39,9 @@ jobs:
         id: find_exe
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Path ./incoming -File | Select-Object -First 1
+          $exe = Get-ChildItem -Path ./incoming -File -Filter *.exe | Select-Object -First 1
           if (-not $exe) {
-            Write-Error "No file found in ./incoming/"
+            Write-Error "No .exe file found in ./incoming/"
             exit 1
           }
           Write-Output "exe_path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
@@ -43,52 +50,41 @@ jobs:
       - name: Protect with loader
         env:
           LOADER_MASTER_SECRET: ${{ secrets.LOADER_MASTER_SECRET }}
+          HWID: ${{ github.event.inputs.hardware_id }}
+        shell: bash
         run: |
-          python -m build_tools.builder protect-exe "${{ steps.find_exe.outputs.exe_path }}" `
-            -o ./protected `
-            --customer "${{ github.event.inputs.customer_id }}" `
-            --days ${{ github.event.inputs.expiry_days }}
+          set -e
+          EXE_PATH=$(find incoming -maxdepth 1 -type f -iname '*.exe' | head -n 1)
+          if [ -z "$EXE_PATH" ]; then
+            echo "::error::No .exe found in incoming/"
+            exit 1
+          fi
+          echo "Found: $EXE_PATH"
 
-      - name: Build customer EXE launcher
-        run: |
-          pyinstaller --onefile --windowed --add-data "protected/license.key;." --add-data "protected/payload.enc;." --add-data "protected/payload.meta;." protected/loader.py -n SecureLauncher
+          CLEAN_HWID=$(printf '%s' "$HWID" | tr -d '[:space:]')
 
-      - name: Install NSIS
-        run: |
-          choco install nsis -y
+          ARGS=(protect-exe "$EXE_PATH" -o ./protected)
+          ARGS+=(--customer "${{ github.event.inputs.customer_id }}")
+          ARGS+=(--days "${{ github.event.inputs.expiry_days }}")
 
-      - name: Create silent installer
+          if [ -n "$CLEAN_HWID" ]; then
+            echo "[+] Binding license to customer HWID: $CLEAN_HWID"
+            ARGS+=(--hardware-id "$CLEAN_HWID")
+          else
+            echo "[!] No hardware_id provided - hardware binding DISABLED"
+            ARGS+=(--no-hardware)
+          fi
+
+          python -m build_tools.builder "${ARGS[@]}"
+
+      - name: Show protected output
         shell: pwsh
         run: |
-          $nsisScript = @"
-          Name "Secure Launcher"
-          OutFile "${{ github.event.inputs.customer_id }}-Launcher.exe"
-          RequestExecutionLevel user
-          SetCompressor lzma
-          SilentInstall silent
-          Section
-            InitPluginsDir
-            SetOutPath `$PLUGINSDIR
-            File "dist\SecureLauncher.exe"
-            File "protected\license.key"
-            File "protected\payload.enc"
-            File "protected\payload.meta"
-            ExecWait `"SecureLauncher.exe"`
-          SectionEnd
-          "@
-          $nsisScript | Out-File -Encoding ASCII ./installer.nsi
-          & "C:\Program Files (x86)\NSIS\makensis.exe" /V2 ./installer.nsi
+          Get-ChildItem -Recurse ./protected | Select-Object FullName, Length | Format-Table -AutoSize
 
-      - name: Upload single-file package
+      - name: Upload protected bundle
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.customer_id }}-Launcher
-          path: ./*-Launcher.exe
+          name: protected-${{ github.event.inputs.customer_id }}
+          path: protected/
           retention-days: 30
-
-      - name: Summary
-        shell: pwsh
-        run: |
-          Write-Output "## Build Complete" >> $env:GITHUB_STEP_SUMMARY
-          Write-Output "- Customer: ${{ github.event.inputs.customer_id }}" >> $env:GITHUB_STEP_SUMMARY
-          Write-Output "- Single silent EXE: ${{ github.event.inputs.customer_id }}-Launcher.exe" >> $env:GITHUB_STEP_SUMMARY
