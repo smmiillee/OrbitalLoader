@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       customer_id:
-        description: 'Customer'
+        description: 'Username'
         required: true
       hardware_id:
         description: 'HWID'
@@ -36,7 +36,6 @@ jobs:
           python -m build_tools.builder generate-license \
             --customer "${{ github.event.inputs.customer_id }}" \
             --days ${{ github.event.inputs.expiry_days }} \
-            --features ${{ github.event.inputs.features }} \
             --hardware-id "${{ github.event.inputs.hardware_id }}" \
             > license_output.txt
 
