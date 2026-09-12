@@ -1,0 +1,22 @@
+# Secrets
+secrets/
+*.secret
+*.key
+*.pem
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Outputs
+protected/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
