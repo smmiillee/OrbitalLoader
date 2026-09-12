@@ -11,8 +11,13 @@ on:
         description: 'License validity (days)'
         default: '365'
         type: string
+      embed_license:
+        description: 'Embed a license now? UNCHECK for first-run flow (customer gets HWID, you run Generate License, they drop license.key next to the launcher)'
+        required: false
+        default: true
+        type: boolean
       hardware_id:
-        description: "Customer's hardware ID (hardware_id.txt). Leave EMPTY to disable HW binding."
+        description: "Hardware ID from hardware_id.txt (only used when 'Embed a license now' is checked)"
         required: false
         default: ''
         type: string
@@ -51,6 +56,7 @@ jobs:
         env:
           LOADER_MASTER_SECRET: ${{ secrets.LOADER_MASTER_SECRET }}
           HWID: ${{ github.event.inputs.hardware_id }}
+          EMBED_LICENSE: ${{ github.event.inputs.embed_license }}
         shell: bash
         run: |
           set -e
@@ -67,11 +73,14 @@ jobs:
           ARGS+=(--customer "${{ github.event.inputs.customer_id }}")
           ARGS+=(--days "${{ github.event.inputs.expiry_days }}")
 
-          if [ -n "$CLEAN_HWID" ]; then
-            echo "[+] Binding license to customer HWID: $CLEAN_HWID"
+          if [ "$EMBED_LICENSE" != "true" ]; then
+            echo "[+] First-run flow: shipping WITHOUT an embedded license"
+            ARGS+=(--no-embed-license)
+          elif [ -n "$CLEAN_HWID" ]; then
+            echo "[+] Embedding license bound to HWID: $CLEAN_HWID"
             ARGS+=(--hardware-id "$CLEAN_HWID")
           else
-            echo "[!] No hardware_id provided - hardware binding DISABLED"
+            echo "[!] No hardware_id provided - embedding UNBOUND license (works on any PC)"
             ARGS+=(--no-hardware)
           fi
 
