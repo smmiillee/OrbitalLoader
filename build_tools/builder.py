@@ -1,8 +1,9 @@
 """
 build_tools/builder.py
-Builds protected, licensed launchers for customer executables.
+Builds protected, licensed launchers for one or more customer executables.
 """
 
+import re
 import sys
 import json
 import base64
@@ -16,6 +17,11 @@ from loader.license_manager import LicenseManager
 from loader.payload_encryptor import PayloadEncryptor
 
 
+def _safe_stem(name: str) -> str:
+    stem = Path(name).stem
+    return re.sub(r'[^A-Za-z0-9_.\-]', '_', stem) or 'payload'
+
+
 class BuildOrchestrator:
     def __init__(self):
         vault = EnvVault()
@@ -27,7 +33,7 @@ class BuildOrchestrator:
         self._license_mgr = LicenseManager(self._license_secret)
         self._encryptor = PayloadEncryptor(self._encryption_secret)
 
-    def protect_exe(self, exe_path, output_dir, customer_id, expiry_days=365,
+    def protect_exe(self, exe_paths, output_dir, customer_id, expiry_days=365,
                     embed_license=True, hardware_bound=True,
                     hardware_fingerprint=None) -> dict:
         if embed_license and hardware_bound and not (hardware_fingerprint or '').strip():
@@ -64,23 +70,38 @@ class BuildOrchestrator:
             license_key = license_info['license_key']
         else:
             print("[+] No embedded license - the customer's first run will")
-            print("    print their hardware ID and write hardware_id.txt.")
+            print("    show their hardware ID and write hardware_id.txt.")
             print("    Generate their license with 'generate-license', then")
             print("    have them drop license.key next to the launcher.")
 
-        print(f"[+] Encrypting {exe_path}...")
-        payload_path = output_dir / 'payload.enc'
-        meta = self._encryptor.encrypt_payload(Path(exe_path), payload_path)
+        encrypted = []
+        for exe_path in exe_paths:
+            exe_path = Path(exe_path)
+            if not exe_path.exists():
+                raise SystemExit(f"[!] EXE not found: {exe_path}")
 
-        meta_path = output_dir / 'payload.meta'
-        with open(meta_path, 'w') as f:
-            json.dump(meta, f, indent=2)
+            stem = _safe_stem(exe_path.name)
+            print(f"[+] Encrypting {exe_path.name} -> payload_{stem}.enc")
+            payload_path = output_dir / ('payload_' + stem + '.enc')
+            meta = self._encryptor.encrypt_payload(exe_path, payload_path)
+            meta['original_name'] = exe_path.name
+
+            meta_path = output_dir / ('payload_' + stem + '.meta')
+            with open(meta_path, 'w') as f:
+                json.dump(meta, f, indent=2)
+
+            encrypted.append({
+                'source': str(exe_path),
+                'payload': payload_path.name,
+                'meta': meta_path.name,
+            })
 
         self._generate_loader(output_dir, license_key)
 
         result = {
             'customer_id': customer_id,
             'embedded_license': bool(embed_license),
+            'payloads': encrypted,
             'expires': license_info['expires'] if license_info else None,
             'hardware_fingerprint': license_info['hardware_fingerprint'] if license_info else None,
             'output_dir': str(output_dir),
@@ -127,6 +148,7 @@ import zlib
 import stat
 import subprocess
 import tempfile
+import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -134,6 +156,14 @@ from pathlib import Path
 EMBEDDED_LICENSE = __EMBEDDED_LICENSE__
 EMBEDDED_LICENSE_SECRET_B64 = __LICENSE_SECRET_B64__
 EMBEDDED_ENCRYPT_SECRET_B64 = __ENCRYPT_SECRET_B64__
+
+# Captured ONCE at module level, where '__file__' is always defined.
+# (Using dir() inside a function only sees local names - do not change back.)
+SCRIPT_FILE = globals().get('__file__')
+
+CLI_ARGS = sys.argv[1:]
+NO_GUI = '--nogui' in CLI_ARGS
+PAYLOAD_ARGS = [a for a in CLI_ARGS if a != '--nogui' and a != '--list' and not a.startswith('--run=')]
 
 
 def _pad_b64(value):
@@ -159,11 +189,8 @@ def _get_write_dirs():
             dirs.append(Path(sys.executable).parent)
     except Exception:
         pass
-    try:
-        if '__file__' in dir():
-            dirs.append(Path(__file__).parent)
-    except Exception:
-        pass
+    if SCRIPT_FILE:
+        dirs.append(Path(SCRIPT_FILE).parent)
     try:
         dirs.append(Path.home() / 'Desktop')
     except Exception:
@@ -244,7 +271,7 @@ _search_paths = [
     Path.cwd(),
     Path(sys.executable).parent,
     Path.home() / 'Desktop',
-    Path(__file__).parent if '__file__' in dir() else None,
+    Path(SCRIPT_FILE).parent if SCRIPT_FILE else None,
     Path(sys._MEIPASS) if hasattr(sys, '_MEIPASS') else None,
 ]
 for _base in _search_paths:
@@ -271,6 +298,34 @@ if not LICENSE_KEY and EMBEDDED_LICENSE:
 
 if not LICENSE_KEY:
     _license_sources.append('No license found')
+
+
+def _find_payloads():
+    # External payload files (exe dir / cwd) override embedded ones (_MEIPASS).
+    found = {}
+    bases = []
+    try:
+        if getattr(sys, 'frozen', False):
+            bases.append(Path(sys.executable).parent)
+    except Exception:
+        pass
+    if SCRIPT_FILE:
+        bases.append(Path(SCRIPT_FILE).parent)
+    bases.append(Path.cwd())
+    if hasattr(sys, '_MEIPASS'):
+        bases.append(Path(sys._MEIPASS))
+    for base in bases:
+        try:
+            for meta_path in sorted(base.glob('payload_*.meta')):
+                key = meta_path.stem[len('payload_'):]
+                if not key or key in found:
+                    continue
+                enc_path = base / ('payload_' + key + '.enc')
+                if enc_path.exists():
+                    found[key] = (enc_path, meta_path)
+        except Exception:
+            continue
+    return found
 
 
 def validate_license(license_key, license_secret):
@@ -349,18 +404,35 @@ def _secure_write(path, data):
         os.chmod(path, stat.S_IRWXU)
 
 
-def execute_exe(data):
-    fd, path = tempfile.mkstemp(suffix='.exe' if sys.platform == 'win32' else '')
+def execute_exe(data, suffix='.exe'):
+    fd, path = tempfile.mkstemp(suffix=suffix)
     try:
         os.close(fd)
         _secure_write(path, data)
-        result = subprocess.run([path] + sys.argv[1:])
+        result = subprocess.run([path] + PAYLOAD_ARGS)
         return result.returncode
     finally:
         try:
             os.unlink(path)
         except Exception:
             pass
+
+
+def _payload_suffix(meta, name):
+    orig = meta.get('original_name') or (name + '.exe')
+    suffix = Path(orig).suffix
+    return suffix if suffix else '.exe'
+
+
+def _run_one(payloads, name):
+    enc_path, meta_path = payloads[name]
+    with open(meta_path, 'r', encoding='utf-8') as f:
+        meta = json.load(f)
+    enc_secret = _decode_embedded_secret(EMBEDDED_ENCRYPT_SECRET_B64)
+    if enc_secret is None:
+        raise ValueError('Loader build error: encryption secret missing')
+    data = decrypt_payload(enc_path, meta, enc_secret)
+    return execute_exe(data, _payload_suffix(meta, name))
 
 
 def _show_error(title, message):
@@ -383,6 +455,199 @@ def _show_info(title, message):
             pass
     else:
         print(title + ': ' + message)
+
+
+def _launch_in_thread(payloads, names, set_status, buttons):
+    def worker():
+        for name in names:
+            try:
+                code = _run_one(payloads, name)
+                set_status(name + ' exited with code ' + str(code))
+            except Exception as e:
+                set_status(name + ' failed: ' + str(e))
+        for btn in buttons:
+            try:
+                btn.configure(state='normal')
+            except Exception:
+                pass
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+
+def _run_gui(payloads):
+    import customtkinter as ctk
+    from tkinter import messagebox
+
+    ctk.set_appearance_mode('dark')
+
+    # iOS dark-mode palette
+    BG = '#1c1c1e'        # system background
+    CARD = '#2c2c2e'      # secondary background
+    ROW = '#3a3a3c'       # tertiary background
+    BLUE = '#0a84ff'      # system blue (dark)
+    GREEN = '#30d158'     # system green
+    TEXT = '#f2f2f7'      # label
+    MUTED = '#98989f'     # secondary label
+
+    app = ctk.CTk()
+    app.title('Orbital')
+    app.geometry('560x500')
+    app.resizable(False, False)
+    app.configure(fg_color=BG)
+
+    font_title = ctk.CTkFont(family='Segoe UI', size=22, weight='bold')
+    font_body = ctk.CTkFont(family='Segoe UI', size=13)
+    font_small = ctk.CTkFont(family='Segoe UI', size=11)
+    font_mono = ctk.CTkFont(family='Consolas', size=13)
+
+    selected = set()
+
+    # Header
+    header = ctk.CTkFrame(app, fg_color='transparent')
+    header.pack(fill='x', padx=20, pady=(16, 2))
+    ctk.CTkLabel(header, text='⬡  Orbital', font=font_title, text_color=TEXT).pack(side='left')
+    ctk.CTkLabel(header, text='   licensed launcher', font=font_small, text_color=MUTED).pack(side='left', pady=(10, 0))
+
+    ctk.CTkLabel(app, text='PROGRAMS', font=ctk.CTkFont(family='Segoe UI', size=11, weight='bold'),
+                 text_color=MUTED, anchor='w').pack(fill='x', padx=26, pady=(10, 2))
+
+    list_holder = ctk.CTkFrame(app, fg_color=CARD, corner_radius=14)
+    list_holder.pack(fill='both', expand=True, padx=20, pady=(0, 10))
+
+    scroll = ctk.CTkScrollableFrame(list_holder, fg_color='transparent')
+    scroll.pack(fill='both', expand=True, padx=4, pady=4)
+
+    status_var = ctk.StringVar(value='Ready.')
+
+    def set_status(text):
+        try:
+            status_var.set(text)
+        except Exception:
+            pass
+
+    def update_run_btn():
+        n = len(selected)
+        run_btn.configure(text=('▶  Run Selected (' + str(n) + ')') if n else '▶  Run Selected')
+
+    def toggle(name, row):
+        if name in selected:
+            selected.discard(name)
+            row.configure(fg_color=ROW)
+        else:
+            selected.add(name)
+            row.configure(fg_color=BLUE)
+        update_run_btn()
+
+    def make_row(name):
+        row = ctk.CTkFrame(scroll, fg_color=ROW, corner_radius=10)
+        row.pack(fill='x', padx=6, pady=4)
+        lbl = ctk.CTkLabel(row, text=name, font=font_mono, text_color=TEXT, anchor='w')
+        lbl.pack(side='left', fill='x', expand=True, padx=(14, 6), pady=10)
+
+        def on_play():
+            start_run([name])
+
+        play = ctk.CTkButton(row, text='▶', width=38, height=30, corner_radius=8,
+                             fg_color=GREEN, hover_color='#28b84a', text_color='white',
+                             font=ctk.CTkFont(size=13, weight='bold'), command=on_play)
+        play.pack(side='right', padx=10, pady=6)
+
+        row.bind('<Button-1>', lambda e, n=name, r=row: toggle(n, r))
+        lbl.bind('<Button-1>', lambda e, n=name, r=row: toggle(n, r))
+
+    def refresh():
+        for w in scroll.winfo_children():
+            w.destroy()
+        selected.clear()
+        for name in sorted(payloads):
+            make_row(name)
+        update_run_btn()
+        set_status('Found ' + str(len(payloads)) + ' program(s).')
+
+    def start_run(names):
+        if not names:
+            return
+        for btn in (run_btn, run_all_btn, refresh_btn):
+            try:
+                btn.configure(state='disabled')
+            except Exception:
+                pass
+        _launch_in_thread(payloads, names, set_status, (run_btn, run_all_btn, refresh_btn))
+
+    def on_run_selected():
+        start_run(sorted(selected))
+
+    def on_run_all():
+        start_run(sorted(payloads))
+
+    def on_about():
+        messagebox.showinfo('About', 'Orbital Launcher\n\nLicensed software launcher.\nDo not redistribute this program.')
+
+    # Bottom action bar
+    bar = ctk.CTkFrame(app, fg_color='transparent')
+    bar.pack(fill='x', padx=20, pady=(0, 4))
+
+    run_btn = ctk.CTkButton(bar, text='▶  Run Selected', font=font_body, height=36, corner_radius=10,
+                            fg_color=BLUE, hover_color='#0071e3', text_color='white',
+                            command=on_run_selected)
+    run_btn.pack(side='left', padx=(0, 6))
+
+    run_all_btn = ctk.CTkButton(bar, text='⏵⏵  Run All', font=font_body, height=36, corner_radius=10,
+                                fg_color=CARD, hover_color=ROW, text_color=TEXT,
+                                border_width=1, border_color='#48484a',
+                                command=on_run_all)
+    run_all_btn.pack(side='left', padx=(0, 6))
+
+    refresh_btn = ctk.CTkButton(bar, text='⟳', width=44, height=36, corner_radius=10,
+                                fg_color=CARD, hover_color=ROW, text_color=TEXT,
+                                border_width=1, border_color='#48484a',
+                                font=ctk.CTkFont(size=15, weight='bold'), command=refresh)
+    refresh_btn.pack(side='left')
+
+    about_btn = ctk.CTkButton(bar, text='ⓘ', width=44, height=36, corner_radius=10,
+                              fg_color=CARD, hover_color=ROW, text_color=TEXT,
+                              border_width=1, border_color='#48484a',
+                              font=ctk.CTkFont(size=14, weight='bold'), command=on_about)
+    about_btn.pack(side='right')
+
+    status = ctk.CTkLabel(app, textvariable=status_var, font=font_small, text_color=MUTED, anchor='w')
+    status.pack(fill='x', padx=24, pady=(0, 12))
+
+    refresh()
+    app.mainloop()
+
+
+def _run_cli(payloads):
+    names = sorted(payloads)
+    while True:
+        print()
+        print('Available programs:')
+        for i, name in enumerate(names, 1):
+            print('  [' + str(i) + '] ' + name)
+        try:
+            choice = input('Number to run, "all", or Enter to quit: ').strip()
+        except EOFError:
+            return 0
+        if not choice:
+            return 0
+        if choice.lower() == 'all':
+            targets = list(names)
+        else:
+            try:
+                idx = int(choice)
+            except ValueError:
+                print('Invalid input.')
+                continue
+            if idx < 1 or idx > len(names):
+                print('Invalid number.')
+                continue
+            targets = [names[idx - 1]]
+        for name in targets:
+            try:
+                code = _run_one(payloads, name)
+                print('[*] ' + name + ' exited with code ' + str(code))
+            except Exception as e:
+                print('[!] ' + name + ' failed: ' + str(e))
 
 
 def main():
@@ -424,39 +689,34 @@ def main():
         return 1
 
     try:
-        enc_secret = _decode_embedded_secret(EMBEDDED_ENCRYPT_SECRET_B64)
-        if enc_secret is None:
-            raise ValueError('Loader build error: encryption secret missing')
+        payloads = _find_payloads()
+        if not payloads:
+            raise ValueError('No encrypted payloads found (payload_*.enc / payload_*.meta missing).')
 
-        here = None
-        if getattr(sys, 'frozen', False):
-            here = Path(sys.executable).parent
-        elif '__file__' in dir():
-            here = Path(__file__).parent
+        if '--list' in CLI_ARGS:
+            for name in sorted(payloads):
+                print(name)
+            return 0
 
-        candidates = []
-        if here:
-            candidates.append(here)
-        candidates.append(Path.cwd())
-        if hasattr(sys, '_MEIPASS'):
-            candidates.append(Path(sys._MEIPASS))
+        run_names = [a.split('=', 1)[1] for a in CLI_ARGS if a.startswith('--run=')]
+        if run_names:
+            for name in run_names:
+                if name not in payloads:
+                    raise ValueError('Unknown program: ' + name)
+            for name in run_names:
+                code = _run_one(payloads, name)
+                print('[*] ' + name + ' exited with code ' + str(code))
+            return 0
 
-        enc_path = None
-        meta_path = None
-        for base in candidates:
-            if (base / 'payload.enc').exists() and (base / 'payload.meta').exists():
-                enc_path = base / 'payload.enc'
-                meta_path = base / 'payload.meta'
-                break
+        if NO_GUI:
+            return _run_cli(payloads)
 
-        if enc_path is None:
-            raise ValueError('payload.enc / payload.meta not found next to the launcher')
-
-        with open(meta_path, 'r', encoding='utf-8') as f:
-            meta = json.load(f)
-
-        payload = decrypt_payload(enc_path, meta, enc_secret)
-        return execute_exe(payload)
+        try:
+            _run_gui(payloads)
+            return 0
+        except ImportError:
+            # customtkinter not available - fall back to the text menu
+            return _run_cli(payloads)
     except ValueError as e:
         _show_error('Error', str(e))
         return 1
@@ -492,9 +752,9 @@ def build_parser():
 
     p_protect = sub.add_parser(
         'protect-exe',
-        help='Encrypt an EXE and build the launcher',
+        help='Encrypt one or more EXEs, generate the license and build the launcher',
     )
-    p_protect.add_argument('exe', type=str, help='Path to the EXE to protect')
+    p_protect.add_argument('exes', nargs='+', help='Path(s) to the EXE(s) to protect')
     p_protect.add_argument('-o', '--output', type=str, default='./protected',
                            help='Output directory (default: ./protected)')
     p_protect.add_argument('--customer', type=str, required=True, help='Customer ID')
@@ -534,7 +794,7 @@ def main():
             parser.error('--no-embed-license and --no-hardware are mutually exclusive')
         orch = BuildOrchestrator()
         result = orch.protect_exe(
-            exe_path=args.exe,
+            exe_paths=args.exes,
             output_dir=args.output,
             customer_id=args.customer,
             expiry_days=args.days,
