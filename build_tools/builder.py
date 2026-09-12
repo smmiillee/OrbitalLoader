@@ -76,29 +76,55 @@ import base64
 import subprocess
 import tempfile
 import stat
+import traceback
 from pathlib import Path
 
 # Embedded license
 EMBEDDED_LICENSE = ''' + embedded_license + r'''
 
-# Load license
-license_path = Path(__file__).parent / 'license.key'
-debug_lines = []
-if license_path.exists():
-    with open(license_path, 'r', encoding='utf-8') as f:
-        raw_key = f.read().strip()
-    # Aggressive cleaning
-    raw_key = raw_key.encode('utf-8').decode('utf-8-sig').strip()
-    raw_key = ''.join(raw_key.split())
-    LICENSE_KEY = raw_key
-    debug_lines.append(f"Loaded from file: {license_path}")
-    debug_lines.append(f"Key length: {len(LICENSE_KEY)}")
-elif EMBEDDED_LICENSE:
+def _write_debug(content):
+    try:
+        loc = Path.home() / 'Desktop'
+        loc.mkdir(exist_ok=True)
+        with open(loc / 'debug.txt', 'w') as f:
+            f.write(str(content))
+    except:
+        pass
+
+# Load license - search multiple locations
+LICENSE_KEY = None
+license_sources = []
+search_paths = [
+    Path.cwd(),  # Where user launched from (most likely)
+    Path(sys.executable).parent,  # EXE location
+    Path.home() / 'Desktop',  # Desktop
+    Path(__file__).parent if '__file__' in dir() else None,
+    Path(sys._MEIPASS) if hasattr(sys, '_MEIPASS') else None,
+]
+for base in search_paths:
+    if not base:
+        continue
+    test_path = base / 'license.key'
+    if test_path.exists():
+        try:
+            with open(test_path, 'r', encoding='utf-8') as f:
+                raw = f.read()
+            cleaned = raw.encode('utf-8').decode('utf-8-sig')
+            cleaned = ''.join(c for c in cleaned if not c.isspace())
+            LICENSE_KEY = cleaned
+            license_sources.append(f"Found at: {test_path} (len={len(cleaned)})")
+            break
+        except Exception as e:
+            license_sources.append(f"Failed at {test_path}: {e}")
+
+if not LICENSE_KEY and EMBEDDED_LICENSE:
     LICENSE_KEY = EMBEDDED_LICENSE
-    debug_lines.append("Using embedded license")
-else:
-    LICENSE_KEY = None
-    debug_lines.append("No license found")
+    license_sources.append("Using embedded")
+
+if not LICENSE_KEY:
+    license_sources.append("No license found")
+
+_write_debug("License sources:\n" + '\n'.join(license_sources))
 
 # Verify license
 import zlib
@@ -143,21 +169,30 @@ def _derive_keys(master):
     return lic, enc
 
 def validate_license(license_key, license_secret):
+    debug_info = []
+    debug_info.append(f"Key length: {len(license_key)}")
+    debug_info.append(f"Key first 20 chars: {license_key[:20]}")
+    
     if not license_key:
         raise ValueError("No license provided")
-    debug_lines.append(f"Validating key length: {len(license_key)}")
     padding = 4 - (len(license_key) % 4)
     if padding != 4:
         license_key += '=' * padding
     compressed = base64.urlsafe_b64decode(license_key)
     license_json = zlib.decompress(compressed)
     bundle = json.loads(license_json)
+    
     lic_hw = bundle['data'].get('hardware_fingerprint', 'NONE')
     cur_hw = _get_hardware_fingerprint()
-    debug_lines.append(f"License customer: {bundle['data'].get('customer_id')}")
-    debug_lines.append(f"License hardware: {lic_hw}")
-    debug_lines.append(f"Current hardware: {cur_hw}")
-    debug_lines.append(f"Hardware bound: {bundle['data'].get('hardware_bound')}")
+    
+    debug_info.append(f"License customer: {bundle['data'].get('customer_id')}")
+    debug_info.append(f"License HW: {lic_hw}")
+    debug_info.append(f"Current HW: {cur_hw}")
+    debug_info.append(f"Match: {lic_hw == cur_hw}")
+    debug_info.append(f"HW bound: {bundle['data'].get('hardware_bound')}")
+    
+    _write_debug('\n'.join(debug_info))
+    
     payload = json.dumps(bundle['data'], sort_keys=True).encode()
     expected = hmac.new(license_secret, payload, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, bundle['signature']):
@@ -206,35 +241,21 @@ def execute_exe(data):
         except:
             pass
 
-def _write_debug():
-    try:
-        debug_path = Path(sys.executable).parent / 'debug.txt'
-        with open(debug_path, 'w') as f:
-            f.write('\n'.join(debug_lines))
-    except:
-        pass
-
 def _show_error(title, message):
-    _write_debug()
     if sys.platform == 'win32':
         try:
             import ctypes
             ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)
         except:
             pass
-    with open(Path(sys.executable).parent / 'error.txt', 'w') as f:
-        f.write(title + '\n' + message)
 
 def _show_info(title, message):
-    _write_debug()
     if sys.platform == 'win32':
         try:
             import ctypes
             ctypes.windll.user32.MessageBoxW(0, message, title, 0x40)
         except:
             pass
-    with open(Path(sys.executable).parent / 'info.txt', 'w') as f:
-        f.write(title + '\n' + message)
 
 def main():
     if not LICENSE_KEY:
@@ -243,7 +264,6 @@ def main():
         hw_file = write_dir / 'hardware_id.txt'
         with open(hw_file, 'w') as f:
             f.write(hw_id)
-        debug_lines.append(f"No license - HW ID: {hw_id}")
         msg = "Your hardware ID: " + hw_id + "\n\nhardware_id.txt saved to your Desktop.\nSend that file to get a new license."
         _show_info("LICENSE REQUIRED", msg)
         return 1
@@ -252,7 +272,6 @@ def main():
         master = _reconstruct_secret()
         lic_secret, enc_secret = _derive_keys(master)
         license_data = validate_license(LICENSE_KEY, lic_secret)
-        debug_lines.append(f"License valid for: {license_data['customer_id']}")
     except ValueError as e:
         err_str = str(e)
         if 'hardware ID:' in err_str:
@@ -263,6 +282,10 @@ def main():
                 f.write(hw_id)
             err_str += '\n\nhardware_id.txt saved to your Desktop.\nSend that file to get a new license.'
         _show_error("License Error", err_str)
+        return 1
+    except Exception as e:
+        _write_debug("Unexpected error:\n" + traceback.format_exc())
+        _show_error("Error", f"Unexpected error: {e}")
         return 1
 
     enc_path = None
@@ -288,7 +311,6 @@ def main():
         meta = json.load(f)
 
     payload = decrypt_payload(enc_path, meta, enc_secret)
-    _write_debug()
     return execute_exe(payload)
 
 if __name__ == '__main__':
@@ -339,19 +361,15 @@ def main():
             features=['premium'],
             hardware_bound=True
         )
-        # Decompress existing license
         import zlib
         padding = 4 - (len(lic['license_key']) % 4)
         compressed = base64.urlsafe_b64decode(lic['license_key'] + ('=' * padding if padding != 4 else ''))
         lic_json = zlib.decompress(compressed)
         lic_data = json.loads(lic_json)
-        # Override hardware fingerprint
         lic_data['data']['hardware_fingerprint'] = args.hardware_id
-        # Re-sign
         payload = json.dumps(lic_data['data'], sort_keys=True).encode()
         import hmac, hashlib
         lic_data['signature'] = hmac.new(derive_license_secret(orch._master), payload, hashlib.sha256).hexdigest()
-        # Re-compress
         new_json = json.dumps(lic_data)
         lic_key = base64.urlsafe_b64encode(zlib.compress(new_json.encode())).decode().rstrip('=')
         print(f"License key for {args.customer}:")
