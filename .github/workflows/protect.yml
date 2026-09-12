@@ -9,9 +9,6 @@ on:
       expiry_days:
         description: 'License validity (days)'
         default: '365'
-      features:
-        description: 'Feature flags'
-        default: 'basic'
 
 jobs:
   protect:
@@ -50,8 +47,7 @@ jobs:
           python -m build_tools.builder protect-exe "${{ steps.find_exe.outputs.exe_path }}" `
             -o ./protected `
             --customer "${{ github.event.inputs.customer_id }}" `
-            --days ${{ github.event.inputs.expiry_days }} `
-            --features ${{ github.event.inputs.features }}
+            --days ${{ github.event.inputs.expiry_days }}
 
       - name: Build customer EXE launcher
         run: |
@@ -65,33 +61,21 @@ jobs:
         shell: pwsh
         run: |
           $nsisScript = @"
-          !include "MUI2.nsh"
           Name "Secure Launcher"
           OutFile "${{ github.event.inputs.customer_id }}-Launcher.exe"
           RequestExecutionLevel user
           SetCompressor lzma
-          
-          ; Silent install - no UI
           SilentInstall silent
-          
           Section
-            ; Create temp dir
             InitPluginsDir
             SetOutPath `$PLUGINSDIR
-            
-            ; Extract files
             File "dist\SecureLauncher.exe"
             File "protected\license.key"
             File "protected\payload.enc"
             File "protected\payload.meta"
-            
-            ; Run launcher
             ExecWait `"SecureLauncher.exe"`
-            
-            ; Cleanup happens automatically on exit
           SectionEnd
           "@
-          
           $nsisScript | Out-File -Encoding ASCII ./installer.nsi
           & "C:\Program Files (x86)\NSIS\makensis.exe" /V2 ./installer.nsi
 
@@ -108,5 +92,3 @@ jobs:
           Write-Output "## Build Complete" >> $env:GITHUB_STEP_SUMMARY
           Write-Output "- Customer: ${{ github.event.inputs.customer_id }}" >> $env:GITHUB_STEP_SUMMARY
           Write-Output "- Single silent EXE: ${{ github.event.inputs.customer_id }}-Launcher.exe" >> $env:GITHUB_STEP_SUMMARY
-          Write-Output "" >> $env:GITHUB_STEP_SUMMARY
-          Write-Output "Customer double-clicks one EXE. No visible extraction. App runs directly." >> $env:GITHUB_STEP_SUMMARY
