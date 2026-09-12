@@ -60,7 +60,10 @@ class BuildOrchestrator:
         }
 
     def _generate_loader(self, output_dir: Path, license_key: str):
-        template = '''#!/usr/bin/env python3
+        embedded_license = repr(license_key)
+        master_secret_b64 = repr(base64.b64encode(self._master).decode())
+
+        template = r'''#!/usr/bin/env python3
 """
 Secure Loader - Auto-generated
 """
@@ -75,7 +78,7 @@ import stat
 from pathlib import Path
 
 # Embedded license
-EMBEDDED_LICENSE = {embedded_license}
+EMBEDDED_LICENSE = ''' + embedded_license + r'''
 
 # Load license
 license_path = Path(__file__).parent / 'license.key'
@@ -113,7 +116,7 @@ def _get_hardware_fingerprint():
     return hashlib.sha256(combined.encode()).hexdigest()[:32]
 
 def _reconstruct_secret():
-    master_b64 = {master_secret_b64}
+    master_b64 = ''' + master_secret_b64 + r'''
     padding = 4 - (len(master_b64) % 4)
     if padding != 4:
         master_b64 += '=' * padding
@@ -144,7 +147,7 @@ def validate_license(license_key, license_secret):
         current_hw = _get_hardware_fingerprint()
         stored_hw = bundle['data'].get('hardware_fingerprint')
         if stored_hw and stored_hw != current_hw:
-            raise ValueError(f"License bound to different hardware.\\nYour hardware ID: {current_hw}\\nSend this to get a valid license.")
+            raise ValueError("License bound to different hardware.\nYour hardware ID: " + current_hw + "\nSend this to get a valid license.")
     return bundle['data']
 
 def decrypt_payload(enc_path, meta, enc_secret):
@@ -165,21 +168,10 @@ def decrypt_payload(enc_path, meta, enc_secret):
     return original
 
 def _secure_write(path, data):
-    """Write file with restricted permissions, cross-platform."""
     with open(path, 'wb') as f:
         f.write(data)
-    # Windows: use ACL via icacls if available, else just rely on temp dir
-    # Linux/Mac: chmod 700
     if sys.platform != 'win32':
         os.chmod(path, stat.S_IRWXU)
-    else:
-        try:
-            import ctypes
-            # Set file to not inherit, remove all access except owner
-            # This is best-effort on Windows
-            pass
-        except:
-            pass
 
 def execute_exe(data):
     fd, path = tempfile.mkstemp(suffix='.exe' if sys.platform == 'win32' else '')
@@ -195,14 +187,13 @@ def execute_exe(data):
             pass
 
 def main():
-    # If no license, show hardware ID and exit
     if not LICENSE_KEY:
         hw_id = _get_hardware_fingerprint()
         print("=" * 50)
         print("LICENSE REQUIRED")
         print("=" * 50)
         print()
-        print(f"Your hardware ID: {hw_id}")
+        print("Your hardware ID: " + hw_id)
         print()
         print("Send this ID to get your license key.")
         print("Place license.key in the same folder as this EXE.")
@@ -214,13 +205,12 @@ def main():
         lic_secret, enc_secret = _derive_keys(master)
         print("Validating license...")
         license_data = validate_license(LICENSE_KEY, lic_secret)
-        print(f"Licensed to: {{license_data['customer_id']}}")
+        print("Licensed to: " + license_data['customer_id'])
     except ValueError as e:
-        print(f"License error: {{e}}")
+        print("License error: " + str(e))
         input("Press Enter to exit...")
         return 1
 
-    # Find payload - check multiple locations for PyInstaller/NSIS
     enc_path = None
     meta_path = None
     for base in [
@@ -245,7 +235,7 @@ def main():
 
     print("Decrypting payload...")
     payload = decrypt_payload(enc_path, meta, enc_secret)
-    print(f"Payload: {{len(payload)}} bytes")
+    print("Payload: " + str(len(payload)) + " bytes")
 
     print("Launching...")
     return execute_exe(payload)
@@ -254,14 +244,9 @@ if __name__ == '__main__':
     sys.exit(main())
 '''
 
-        loader_code = template.format(
-            embedded_license=repr(license_key),
-            master_secret_b64=repr(base64.b64encode(self._master).decode())
-        )
-
         loader_path = output_dir / 'loader.py'
         with open(loader_path, 'w') as f:
-            f.write(loader_code)
+            f.write(template)
 
         print(f"[+] Standalone loader: {loader_path}")
 
@@ -306,7 +291,6 @@ def main():
             features=args.features,
             hardware_bound=True
         )
-        # Override hardware fingerprint
         lic_data = json.loads(base64.urlsafe_b64decode(lic['license_key'] + '=' * (4 - len(lic['license_key']) % 4)))
         lic_data['data']['hardware_fingerprint'] = args.hardware_id
         payload = json.dumps(lic_data['data'], sort_keys=True).encode()
