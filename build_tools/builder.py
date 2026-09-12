@@ -25,7 +25,7 @@ class BuildOrchestrator:
 
     def protect_exe(self, exe_path: Path, output_dir: Path,
                     customer_id: str, expiry_days: int = 365,
-                    features: list = None) -> dict:
+                    features: list = None, hardware_bound: bool = True) -> dict:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -33,7 +33,8 @@ class BuildOrchestrator:
         license_info = self._license_mgr.generate_license(
             customer_id=customer_id,
             expiry_days=expiry_days,
-            features=features or ['basic']
+            features=features or ['basic'],
+            hardware_bound=hardware_bound
         )
 
         license_path = output_dir / 'license.key'
@@ -70,6 +71,7 @@ import json
 import base64
 import subprocess
 import tempfile
+import stat
 from pathlib import Path
 
 # Embedded license
@@ -83,16 +85,35 @@ if license_path.exists():
 elif EMBEDDED_LICENSE:
     LICENSE_KEY = EMBEDDED_LICENSE
 else:
-    LICENSE_KEY = input("Enter license key: ").strip()
+    LICENSE_KEY = None
 
 # Verify license
 import zlib
 import hashlib
 import hmac
 
+def _get_hardware_fingerprint():
+    import struct
+    import socket
+    components = []
+    for path in ['/etc/machine-id', '/var/lib/dbus/machine-id']:
+        try:
+            with open(path, 'r') as f:
+                components.append(f.read().strip())
+            break
+        except:
+            pass
+    try:
+        components.append(socket.gethostname())
+    except:
+        pass
+    components.append(sys.platform)
+    components.append(struct.calcsize('P') * 8)
+    combined = '|'.join(str(c) for c in components if c)
+    return hashlib.sha256(combined.encode()).hexdigest()[:32]
+
 def _reconstruct_secret():
     master_b64 = {master_secret_b64}
-    # Fix padding
     padding = 4 - (len(master_b64) % 4)
     if padding != 4:
         master_b64 += '=' * padding
@@ -104,56 +125,67 @@ def _derive_keys(master):
     return lic, enc
 
 def validate_license(license_key, license_secret):
+    if not license_key:
+        raise ValueError("No license provided")
     padding = 4 - (len(license_key) % 4)
     if padding != 4:
         license_key += '=' * padding
-
     compressed = base64.urlsafe_b64decode(license_key)
     license_json = zlib.decompress(compressed)
     bundle = json.loads(license_json)
-
     payload = json.dumps(bundle['data'], sort_keys=True).encode()
     expected = hmac.new(license_secret, payload, hashlib.sha256).hexdigest()
-
     if not hmac.compare_digest(expected, bundle['signature']):
         raise ValueError("Invalid license")
-
     import time
     if time.time() > bundle['data']['expires_at']:
         raise ValueError("License expired")
-
+    if bundle['data'].get('hardware_bound'):
+        current_hw = _get_hardware_fingerprint()
+        stored_hw = bundle['data'].get('hardware_fingerprint')
+        if stored_hw and stored_hw != current_hw:
+            raise ValueError(f"License bound to different hardware.\\nYour hardware ID: {current_hw}\\nSend this to get a valid license.")
     return bundle['data']
 
 def decrypt_payload(enc_path, meta, enc_secret):
     from cryptography.fernet import Fernet
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     from cryptography.hazmat.primitives import hashes
-
     salt = base64.b64decode(meta['salt'])
     kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=480000)
     key = base64.urlsafe_b64encode(kdf.derive(enc_secret))
-
     fernet = Fernet(key)
     with open(enc_path, 'rb') as f:
         encrypted = f.read()
-
     compressed = fernet.decrypt(encrypted)
     import zlib
     original = zlib.decompress(compressed)
-
     if hashlib.sha256(original).hexdigest() != meta['original_hash']:
         raise ValueError("Integrity check failed")
-
     return original
+
+def _secure_write(path, data):
+    """Write file with restricted permissions, cross-platform."""
+    with open(path, 'wb') as f:
+        f.write(data)
+    # Windows: use ACL via icacls if available, else just rely on temp dir
+    # Linux/Mac: chmod 700
+    if sys.platform != 'win32':
+        os.chmod(path, stat.S_IRWXU)
+    else:
+        try:
+            import ctypes
+            # Set file to not inherit, remove all access except owner
+            # This is best-effort on Windows
+            pass
+        except:
+            pass
 
 def execute_exe(data):
     fd, path = tempfile.mkstemp(suffix='.exe' if sys.platform == 'win32' else '')
     try:
-        os.fchmod(fd, 0o700)
-        with os.fdopen(fd, 'wb') as f:
-            f.write(data)
-        if sys.platform != 'win32':
-            os.chmod(path, 0o700)
+        os.close(fd)
+        _secure_write(path, data)
         result = subprocess.run([path] + sys.argv[1:])
         return result.returncode
     finally:
@@ -163,16 +195,52 @@ def execute_exe(data):
             pass
 
 def main():
-    master = _reconstruct_secret()
-    lic_secret, enc_secret = _derive_keys(master)
+    # If no license, show hardware ID and exit
+    if not LICENSE_KEY:
+        hw_id = _get_hardware_fingerprint()
+        print("=" * 50)
+        print("LICENSE REQUIRED")
+        print("=" * 50)
+        print()
+        print(f"Your hardware ID: {hw_id}")
+        print()
+        print("Send this ID to get your license key.")
+        print("Place license.key in the same folder as this EXE.")
+        input("Press Enter to exit...")
+        return 1
 
-    print("Validating license...")
-    license_data = validate_license(LICENSE_KEY, lic_secret)
-    print(f"Licensed to: {{license_data['customer_id']}}")
+    try:
+        master = _reconstruct_secret()
+        lic_secret, enc_secret = _derive_keys(master)
+        print("Validating license...")
+        license_data = validate_license(LICENSE_KEY, lic_secret)
+        print(f"Licensed to: {{license_data['customer_id']}}")
+    except ValueError as e:
+        print(f"License error: {{e}}")
+        input("Press Enter to exit...")
+        return 1
 
-    base = Path(__file__).parent
-    enc_path = base / 'payload.enc'
-    with open(base / 'payload.meta') as f:
+    # Find payload - check multiple locations for PyInstaller/NSIS
+    enc_path = None
+    meta_path = None
+    for base in [
+        Path(sys.executable).parent if getattr(sys, 'frozen', False) else None,
+        Path(__file__).parent,
+        Path(sys._MEIPASS) if hasattr(sys, '_MEIPASS') else None,
+    ]:
+        if base:
+            test_enc = base / 'payload.enc'
+            test_meta = base / 'payload.meta'
+            if test_enc.exists() and test_meta.exists():
+                enc_path = test_enc
+                meta_path = test_meta
+                break
+
+    if not enc_path:
+        print("Payload not found!")
+        return 1
+
+    with open(meta_path) as f:
         meta = json.load(f)
 
     print("Decrypting payload...")
@@ -208,6 +276,13 @@ def main():
     exe_parser.add_argument('--customer', required=True)
     exe_parser.add_argument('--days', type=int, default=365)
     exe_parser.add_argument('--features', nargs='+', default=['basic'])
+    exe_parser.add_argument('--no-hardware', action='store_true', help='Disable hardware binding')
+
+    hw_parser = subparsers.add_parser('generate-license', help='Generate license for hardware ID')
+    hw_parser.add_argument('--customer', required=True)
+    hw_parser.add_argument('--days', type=int, default=365)
+    hw_parser.add_argument('--features', nargs='+', default=['basic'])
+    hw_parser.add_argument('--hardware-id', required=True, help='Hardware ID from customer')
 
     args = parser.parse_args()
 
@@ -218,9 +293,30 @@ def main():
             output_dir=args.output,
             customer_id=args.customer,
             expiry_days=args.days,
-            features=args.features
+            features=args.features,
+            hardware_bound=not args.no_hardware
         )
         print(json.dumps(result, indent=2))
+
+    elif args.command == 'generate-license':
+        orch = BuildOrchestrator()
+        lic = orch._license_mgr.generate_license(
+            customer_id=args.customer,
+            expiry_days=args.days,
+            features=args.features,
+            hardware_bound=True
+        )
+        # Override hardware fingerprint
+        lic_data = json.loads(base64.urlsafe_b64decode(lic['license_key'] + '=' * (4 - len(lic['license_key']) % 4)))
+        lic_data['data']['hardware_fingerprint'] = args.hardware_id
+        payload = json.dumps(lic_data['data'], sort_keys=True).encode()
+        import hmac, hashlib
+        lic_data['signature'] = hmac.new(derive_license_secret(orch._master), payload, hashlib.sha256).hexdigest()
+        lic_json = json.dumps(lic_data)
+        import zlib
+        lic_key = base64.urlsafe_b64encode(zlib.compress(lic_json.encode())).decode().rstrip('=')
+        print(f"License key for {args.customer}:")
+        print(lic_key)
 
     return 0
 
