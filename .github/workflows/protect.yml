@@ -15,7 +15,7 @@ on:
 
 jobs:
   protect:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
 
     steps:
       - name: Checkout code
@@ -27,39 +27,68 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
 
       - name: Find EXE in incoming/
         id: find_exe
+        shell: pwsh
         run: |
-          EXE=$(find ./incoming -type f | head -1)
-          if [ -z "$EXE" ]; then
-            echo "No file found in ./incoming/"
-            echo "Please upload your EXE to the incoming/ folder"
+          $exe = Get-ChildItem -Path ./incoming -File | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "No file found in ./incoming/"
             exit 1
-          fi
-          echo "exe_path=$EXE" >> $GITHUB_OUTPUT
-          echo "Found: $EXE"
+          }
+          Write-Output "exe_path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+          Write-Output "Found: $($exe.FullName)"
 
       - name: Protect with loader
         env:
           LOADER_MASTER_SECRET: ${{ secrets.LOADER_MASTER_SECRET }}
         run: |
-          python -m build_tools.builder protect-exe "${{ steps.find_exe.outputs.exe_path }}" \
-            -o ./protected \
-            --customer "${{ github.event.inputs.customer_id }}" \
-            --days ${{ github.event.inputs.expiry_days }} \
+          python -m build_tools.builder protect-exe "${{ steps.find_exe.outputs.exe_path }}" `
+            -o ./protected `
+            --customer "${{ github.event.inputs.customer_id }}" `
+            --days ${{ github.event.inputs.expiry_days }} `
             --features ${{ github.event.inputs.features }}
 
-      - name: Upload protected build
+      - name: Build customer EXE launcher
+        run: |
+          pyinstaller --onefile --noconsole protected/loader.py -n SecureLauncher
+
+      - name: Install 7-Zip
+        run: |
+          choco install 7zip -y
+
+      - name: Create SFX single-file package
+        shell: pwsh
+        run: |
+          # Create temp folder with all files
+          New-Item -ItemType Directory -Force -Path ./sfx-contents
+          Copy-Item ./dist/SecureLauncher.exe ./sfx-contents/
+          Copy-Item ./protected/license.key ./sfx-contents/
+          Copy-Item ./protected/payload.enc ./sfx-contents/
+          Copy-Item ./protected/payload.meta ./sfx-contents/
+          
+          # Create 7z archive
+          & "C:\Program Files\7-Zip\7z.exe" a -sfx7z.sfx -r ./SecureLauncher-SFX.exe ./sfx-contents/*
+          
+          # Rename to customer-friendly name
+          Rename-Item ./SecureLauncher-SFX.exe "./${{ github.event.inputs.customer_id }}-Launcher.exe"
+
+      - name: Upload single-file package
         uses: actions/upload-artifact@v4
         with:
-          name: protected-${{ github.event.inputs.customer_id }}
-          path: protected/
+          name: ${{ github.event.inputs.customer_id }}-Launcher
+          path: ./*-Launcher.exe
           retention-days: 30
 
       - name: Summary
+        shell: pwsh
         run: |
-          echo "## Protected Build Complete" >> $GITHUB_STEP_SUMMARY
-          echo "- Customer: ${{ github.event.inputs.customer_id }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Download artifact: \`protected-${{ github.event.inputs.customer_id }}\`" >> $GITHUB_STEP_SUMMARY
+          Write-Output "## Build Complete" >> $env:GITHUB_STEP_SUMMARY
+          Write-Output "- Customer: ${{ github.event.inputs.customer_id }}" >> $env:GITHUB_STEP_SUMMARY
+          Write-Output "- Single file: `${{ github.event.inputs.customer_id }}-Launcher.exe`" >> $env:GITHUB_STEP_SUMMARY
+          Write-Output "" >> $env:GITHUB_STEP_SUMMARY
+          Write-Output "Customer double-clicks one EXE, it self-extracts and runs." >> $env:GITHUB_STEP_SUMMARY
