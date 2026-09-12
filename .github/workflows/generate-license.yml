@@ -37,7 +37,6 @@ jobs:
           echo "Input HWID: '${{ github.event.inputs.hardware_id }}'"
           echo "Stripped HWID: '$HWID'"
           
-          # Run and save to file
           python -m build_tools.builder generate-license \
             --customer "${{ github.event.inputs.customer_id }}" \
             --days ${{ github.event.inputs.expiry_days }} \
@@ -47,14 +46,12 @@ jobs:
           echo "=== Full output ==="
           cat raw_output.txt
           
-          # Extract license key - line starting with "License key for"
-          LICENSE_KEY=$(grep "^License key for" raw_output.txt | sed 's/License key for.*://' | xargs)
+          # Extract license key - line after "License key for"
+          LICENSE_KEY=$(grep -A 1 "^License key for" raw_output.txt | tail -n 1 | tr -d '[:space:]')
           echo "=== Extracted key length: ${#LICENSE_KEY}"
           
-          # Save clean key
           echo -n "$LICENSE_KEY" > license.key
           
-          # Verify
           python3 << 'PYEOF'
           import base64, zlib, json
           with open('license.key', 'r') as f:
