@@ -81,8 +81,7 @@ jobs:
         run: |
           set -e
           ARGS=(--onefile --noconsole --name SecureLauncher --clean
-                --distpath ./dist --workpath ./build_tmp --specpath ./build_tmp
-                --collect-all customtkinter)
+                --distpath ./dist --workpath ./build_tmp --specpath ./build_tmp)
           # PyInstaller resolves --add-data paths relative to the SPEC file's
           # folder, not the working directory - so pass absolute Windows paths.
           for f in protected/payload_*.enc protected/payload_*.meta; do
