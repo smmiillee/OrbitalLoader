@@ -187,19 +187,16 @@ def execute_exe(data):
             pass
 
 def _show_error(title, message):
-    """Show error without console - uses Windows message box or writes to file."""
     if sys.platform == 'win32':
         try:
             import ctypes
             ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)
         except:
             pass
-    # Always write to file as fallback
     with open(Path(sys.executable).parent / 'error.txt', 'w') as f:
         f.write(title + '\n' + message)
 
 def _show_info(title, message):
-    """Show info without console."""
     if sys.platform == 'win32':
         try:
             import ctypes
