@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       customer_id:
-        description: 'Username'
+        description: 'Customer name/ID'
         required: true
       hardware_id:
-        description: 'HWID'
+        description: 'Hardware ID from customer'
         required: true
       expiry_days:
-        description: 'Sub Time (Days)'
+        description: 'License validity (days)'
         default: '365'
 
 jobs:
@@ -33,10 +33,12 @@ jobs:
         env:
           LOADER_MASTER_SECRET: ${{ secrets.LOADER_MASTER_SECRET }}
         run: |
+          HWID=$(echo "${{ github.event.inputs.hardware_id }}" | tr -d '[:space:]')
+          echo "Using hardware ID: $HWID"
           python -m build_tools.builder generate-license \
             --customer "${{ github.event.inputs.customer_id }}" \
             --days ${{ github.event.inputs.expiry_days }} \
-            --hardware-id "${{ github.event.inputs.hardware_id }}" \
+            --hardware-id "$HWID" \
             > license_output.txt
 
       - name: Extract license key
@@ -70,5 +72,3 @@ jobs:
           echo "- Expiry: ${{ github.event.inputs.expiry_days }} days" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Download artifact: \`license-${{ github.event.inputs.customer_id }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Send the license.key file to your customer." >> $GITHUB_STEP_SUMMARY
