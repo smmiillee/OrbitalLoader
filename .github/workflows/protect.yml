@@ -71,8 +71,21 @@ jobs:
           Copy-Item ./protected/payload.enc ./sfx-contents/
           Copy-Item ./protected/payload.meta ./sfx-contents/
           
-          # Create 7z archive
-          & "C:\Program Files\7-Zip\7z.exe" a -sfx7z.sfx -r ./SecureLauncher-SFX.exe ./sfx-contents/*
+          # Find 7z and SFX module
+          $7zPath = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+          if (-not $7zPath) { $7zPath = "C:\Program Files\7-Zip\7z.exe" }
+          if (-not (Test-Path $7zPath)) { $7zPath = "C:\ProgramData\chocolatey\bin\7z.exe" }
+          
+          $sfxPath = Join-Path (Split-Path $7zPath) "7z.sfx"
+          if (-not (Test-Path $sfxPath)) { $sfxPath = "C:\Program Files\7-Zip\7z.sfx" }
+          if (-not (Test-Path $sfxPath)) { $sfxPath = "C:\ProgramData\chocolatey\lib\7zip\tools\7z.sfx" }
+          
+          Write-Output "7z: $7zPath"
+          Write-Output "SFX: $sfxPath"
+          
+          # Create 7z archive then convert to SFX
+          & $7zPath a -r ./archive.7z ./sfx-contents/*
+          & $7zPath a -sfx"$sfxPath" ./SecureLauncher-SFX.exe ./archive.7z
           
           # Rename to customer-friendly name
           Rename-Item ./SecureLauncher-SFX.exe "./${{ github.event.inputs.customer_id }}-Launcher.exe"
