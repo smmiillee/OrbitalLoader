@@ -73,7 +73,7 @@ class LicenseManager:
             'expires_at': expires_at,
             'hardware_bound': hardware_bound,
             'hardware_fingerprint': hw_fp,
-            'features': features or ['basic'],
+            'features': features or ['premium'],
             'max_activations': 1,
             'activation_count': 0,
             'nonce': secrets.token_hex(16),
