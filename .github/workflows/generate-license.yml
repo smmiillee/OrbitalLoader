@@ -1,0 +1,78 @@
+name: Generate License for Customer
+
+on:
+  workflow_dispatch:
+    inputs:
+      customer_id:
+        description: 'Customer name/ID'
+        required: true
+      hardware_id:
+        description: 'Hardware ID from customer'
+        required: true
+      expiry_days:
+        description: 'License validity (days)'
+        default: '365'
+      features:
+        description: 'Feature flags (space separated)'
+        default: 'basic'
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate license
+        env:
+          LOADER_MASTER_SECRET: ${{ secrets.LOADER_MASTER_SECRET }}
+        run: |
+          python -m build_tools.builder generate-license \
+            --customer "${{ github.event.inputs.customer_id }}" \
+            --days ${{ github.event.inputs.expiry_days }} \
+            --features ${{ github.event.inputs.features }} \
+            --hardware-id "${{ github.event.inputs.hardware_id }}" \
+            > license_output.txt
+
+      - name: Extract license key
+        id: extract
+        run: |
+          LICENSE_KEY=$(tail -n 1 license_output.txt)
+          echo "license_key=$LICENSE_KEY" >> $GITHUB_OUTPUT
+
+      - name: Create license file artifact
+        run: |
+          mkdir -p license_output
+          tail -n 1 license_output.txt > license_output/license.key
+          echo "Customer: ${{ github.event.inputs.customer_id }}" > license_output/README.txt
+          echo "Hardware: ${{ github.event.inputs.hardware_id }}" >> license_output/README.txt
+          echo "Expiry: ${{ github.event.inputs.expiry_days }} days" >> license_output/README.txt
+          echo "" >> license_output/README.txt
+          echo "Place license.key next to the launcher EXE." >> license_output/README.txt
+
+      - name: Upload license
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-${{ github.event.inputs.customer_id }}
+          path: license_output/
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          echo "## License Generated" >> $GITHUB_STEP_SUMMARY
+          echo "- Customer: ${{ github.event.inputs.customer_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Hardware: ${{ github.event.inputs.hardware_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Expiry: ${{ github.event.inputs.expiry_days }} days" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download artifact: \`license-${{ github.event.inputs.customer_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Send the license.key file to your customer." >> $GITHUB_STEP_SUMMARY
