@@ -521,12 +521,12 @@ def _run_gui(payloads):
 
     selected = set()
 
-    tk.Label(app, text='Orbital', font=F_TITLE, fg=GOLD_DARK, bg=BG).pack(pady=(6, 2))
+    tk.Label(app, text='Orbital', font=('Tahoma', 26, 'bold'), fg=BLACK, bg=BG).pack(pady=(6, 2))
 
     # Programs group box - LabelFrame naturally draws its label sitting
     # in the border line, exactly like the reference menus.
     group = tk.LabelFrame(app, text='Programs -', font=F_GROUP, fg=BLACK, bg=BG,
-                          bd=0, highlightthickness=1, highlightbackground=GOLD)
+                          bd=0, highlightthickness=2, highlightbackground=GOLD_DARK)
     group.pack(fill='both', expand=True, padx=14, pady=(10, 6))
 
     canvas = tk.Canvas(group, bg=BG, highlightthickness=0, bd=0)
@@ -552,8 +552,8 @@ def _run_gui(payloads):
             pass
 
     def make_row(name):
-        row = tk.Frame(inner, bg=BG)
-        row.pack(fill='x', padx=6, pady=2)
+        row = tk.Frame(inner, bg=BG, bd=1, relief='sunken')
+        row.pack(fill='x', padx=6, pady=3)
         var = tk.BooleanVar(value=(name in selected))
 
         def on_toggle(n=name, v=var):
@@ -638,14 +638,43 @@ def _run_gui(payloads):
     if wm_path:
         try:
             wm = tk.PhotoImage(file=str(wm_path))
-            if wm.width() > 240:
-                factor = max(1, wm.width() // 240)
+            # Keep it small - tucked in the corner
+            if wm.width() > 120:
+                factor = max(1, wm.width() // 120)
                 wm = wm.subsample(factor, factor)
+            # tk can't do per-pixel alpha, so simulate 40% opacity by
+            # blending every pixel toward the window background color.
+            WMR = 0.4  # watermark opacity (0.0 invisible - 1.0 full)
+            BG_RGB = (192, 192, 192)  # must match BG (#c0c0c0)
+            w_px, h_px = wm.width(), wm.height()
+            faded = tk.PhotoImage(master=app, width=w_px, height=h_px)
+            for y in range(h_px):
+                row = []
+                for x in range(w_px):
+                    try:
+                        r, g, b = wm.get(x, y)[:3]
+                    except Exception:
+                        r, g, b = BG_RGB
+                    row.append('#%02x%02x%02x' % (
+                        int(r * WMR + BG_RGB[0] * (1 - WMR)),
+                        int(g * WMR + BG_RGB[1] * (1 - WMR)),
+                        int(b * WMR + BG_RGB[2] * (1 - WMR)),
+                    ))
+                faded.put('{' + ' '.join(row) + '}', to=(0, y))
+            for y in range(h_px):
+                for x in range(w_px):
+                    try:
+                        if wm.transparency_get(x, y):
+                            faded.transparency_set(x, y, True)
+                    except Exception:
+                        pass
+            wm = faded
             wm_label = tk.Label(app, image=wm, bg=BG, bd=0, highlightthickness=0)
             wm_label.image = wm  # keep a reference so it is not garbage-collected
-            wm_label.place(relx=1.0, rely=0.0, x=-10, y=6, anchor='ne')
+            wm_label.place(relx=1.0, rely=0.0, x=-6, y=4, anchor='ne')
             _write_debug('Watermark: loaded from ' + str(wm_path) +
-                         ' (' + str(wm.width()) + 'x' + str(wm.height()) + ')')
+                         ' (' + str(wm.width()) + 'x' + str(wm.height()) +
+                         ', faded to ' + str(int(WMR * 100)) + '%)')
         except Exception as e:
             _write_debug('Watermark: FAILED to load ' + str(wm_path) + ' - ' + repr(e) +
                          ' (is it a real PNG? A JPEG renamed to .png will not load)')
