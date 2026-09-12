@@ -25,7 +25,7 @@ class BuildOrchestrator:
 
     def protect_exe(self, exe_path: Path, output_dir: Path,
                     customer_id: str, expiry_days: int = 365,
-                    features: list = None, hardware_bound: bool = True) -> dict:
+                    hardware_bound: bool = True) -> dict:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -33,7 +33,7 @@ class BuildOrchestrator:
         license_info = self._license_mgr.generate_license(
             customer_id=customer_id,
             expiry_days=expiry_days,
-            features=features or ['basic'],
+            features=['premium'],
             hardware_bound=hardware_bound
         )
 
@@ -147,7 +147,7 @@ def validate_license(license_key, license_secret):
         current_hw = _get_hardware_fingerprint()
         stored_hw = bundle['data'].get('hardware_fingerprint')
         if stored_hw and stored_hw != current_hw:
-            raise ValueError("License bound to different hardware.\nYour hardware ID: " + current_hw + "\nSend this to get a valid license.")
+            raise ValueError("License bound to different hardware. Your hardware ID: " + current_hw)
     return bundle['data']
 
 def decrypt_payload(enc_path, meta, enc_secret):
@@ -186,29 +186,42 @@ def execute_exe(data):
         except:
             pass
 
+def _show_error(title, message):
+    """Show error without console - uses Windows message box or writes to file."""
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)
+        except:
+            pass
+    # Always write to file as fallback
+    with open(Path(sys.executable).parent / 'error.txt', 'w') as f:
+        f.write(title + '\n' + message)
+
+def _show_info(title, message):
+    """Show info without console."""
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, message, title, 0x40)
+        except:
+            pass
+    with open(Path(sys.executable).parent / 'info.txt', 'w') as f:
+        f.write(title + '\n' + message)
+
 def main():
     if not LICENSE_KEY:
         hw_id = _get_hardware_fingerprint()
-        print("=" * 50)
-        print("LICENSE REQUIRED")
-        print("=" * 50)
-        print()
-        print("Your hardware ID: " + hw_id)
-        print()
-        print("Send this ID to get your license key.")
-        print("Place license.key in the same folder as this EXE.")
-        input("Press Enter to exit...")
+        msg = "Your hardware ID: " + hw_id + "\n\nSend this ID to get your license key.\nPlace license.key in the same folder as this EXE."
+        _show_info("LICENSE REQUIRED", msg)
         return 1
 
     try:
         master = _reconstruct_secret()
         lic_secret, enc_secret = _derive_keys(master)
-        print("Validating license...")
         license_data = validate_license(LICENSE_KEY, lic_secret)
-        print("Licensed to: " + license_data['customer_id'])
     except ValueError as e:
-        print("License error: " + str(e))
-        input("Press Enter to exit...")
+        _show_error("License Error", str(e))
         return 1
 
     enc_path = None
@@ -227,17 +240,13 @@ def main():
                 break
 
     if not enc_path:
-        print("Payload not found!")
+        _show_error("Error", "Payload not found!")
         return 1
 
     with open(meta_path) as f:
         meta = json.load(f)
 
-    print("Decrypting payload...")
     payload = decrypt_payload(enc_path, meta, enc_secret)
-    print("Payload: " + str(len(payload)) + " bytes")
-
-    print("Launching...")
     return execute_exe(payload)
 
 if __name__ == '__main__':
@@ -260,13 +269,11 @@ def main():
     exe_parser.add_argument('-o', '--output', type=Path, default=Path('protected'))
     exe_parser.add_argument('--customer', required=True)
     exe_parser.add_argument('--days', type=int, default=365)
-    exe_parser.add_argument('--features', nargs='+', default=['basic'])
     exe_parser.add_argument('--no-hardware', action='store_true', help='Disable hardware binding')
 
     hw_parser = subparsers.add_parser('generate-license', help='Generate license for hardware ID')
     hw_parser.add_argument('--customer', required=True)
     hw_parser.add_argument('--days', type=int, default=365)
-    hw_parser.add_argument('--features', nargs='+', default=['basic'])
     hw_parser.add_argument('--hardware-id', required=True, help='Hardware ID from customer')
 
     args = parser.parse_args()
@@ -278,7 +285,6 @@ def main():
             output_dir=args.output,
             customer_id=args.customer,
             expiry_days=args.days,
-            features=args.features,
             hardware_bound=not args.no_hardware
         )
         print(json.dumps(result, indent=2))
@@ -288,7 +294,7 @@ def main():
         lic = orch._license_mgr.generate_license(
             customer_id=args.customer,
             expiry_days=args.days,
-            features=args.features,
+            features=['premium'],
             hardware_bound=True
         )
         lic_data = json.loads(base64.urlsafe_b64decode(lic['license_key'] + '=' * (4 - len(lic['license_key']) % 4)))
