@@ -1,6 +1,6 @@
 """
 build_tools/builder.py
-Builds protected, licensed launchers for one or more customer executables.
+Builds protected, licensed launchers for one or more user executables.
 """
 
 import re
@@ -26,7 +26,7 @@ class BuildOrchestrator:
     def __init__(self):
         vault = EnvVault()
         self._master = vault.get_master_secret()
-        # Only the DERIVED secrets get embedded into customer launchers.
+        # Only the DERIVED secrets get embedded into user launchers.
         # The master secret never leaves this process.
         self._license_secret = derive_license_secret(self._master)
         self._encryption_secret = derive_encryption_secret(self._master)
@@ -40,8 +40,8 @@ class BuildOrchestrator:
             raise SystemExit(
                 "[!] Refusing to build: embedding a hardware-bound license but no "
                 "--hardware-id was supplied. The license would bind to this build\n"
-                "    machine instead of the customer's PC.\n"
-                "    Pass --hardware-id <customer HWID>, --no-hardware, or "
+                "    machine instead of the user's PC.\n"
+                "    Pass --hardware-id <user HWID>, --no-hardware, or "
                 "--no-embed-license."
             )
 
@@ -69,10 +69,22 @@ class BuildOrchestrator:
             print("[+] License saved")
             license_key = license_info['license_key']
         else:
-            print("[+] No embedded license - the customer's first run will")
-            print("    show their hardware ID and write hardware_id.txt.")
+            print("[+] No embedded license - the user's first run will")
+            print("    show their HWID and write hardware_id.txt.")
             print("    Generate their license with 'generate-license', then")
             print("    have them drop license.key next to the launcher.")
+
+        # Optional display-name overrides, e.g. {"cs2_dashboard.exe": "Radar"}
+        names_map = {}
+        for candidate in (Path.cwd() / 'names.json', output_dir / 'names.json'):
+            if candidate.exists():
+                try:
+                    with open(candidate, 'r', encoding='utf-8') as f:
+                        names_map = json.load(f)
+                    print(f"[+] Using display names from {candidate}")
+                    break
+                except Exception as e:
+                    print(f"[!] Could not parse {candidate}: {e}")
 
         encrypted = []
         for exe_path in exe_paths:
@@ -80,8 +92,10 @@ class BuildOrchestrator:
             if not exe_path.exists():
                 raise SystemExit(f"[!] EXE not found: {exe_path}")
 
-            stem = _safe_stem(exe_path.name)
-            print(f"[+] Encrypting {exe_path.name} -> payload_{stem}.enc")
+            raw_stem = exe_path.stem
+            display = names_map.get(exe_path.name) or names_map.get(exe_path.stem) or raw_stem
+            stem = _safe_stem(display)
+            print(f"[+] Encrypting {exe_path.name} -> payload_{stem}.enc (shown as: {display})")
             payload_path = output_dir / ('payload_' + stem + '.enc')
             meta = self._encryptor.encrypt_payload(exe_path, payload_path)
             meta['original_name'] = exe_path.name
@@ -96,7 +110,7 @@ class BuildOrchestrator:
                 'meta': meta_path.name,
             })
 
-        self._generate_loader(output_dir, license_key)
+        self._generate_loader(output_dir, license_key, customer_id)
 
         result = {
             'customer_id': customer_id,
@@ -116,7 +130,7 @@ class BuildOrchestrator:
             raise SystemExit(
                 "[!] Refusing to generate a hardware-bound license without "
                 "--hardware-id (it would bind to this machine instead of the "
-                "customer's PC). Pass --hardware-id <customer HWID> or --no-hardware."
+                "user's PC). Pass --hardware-id <user HWID> or --no-hardware."
             )
         return self._license_mgr.generate_license(
             customer_id=customer_id,
@@ -126,7 +140,7 @@ class BuildOrchestrator:
             hardware_fingerprint=hardware_id,
         )
 
-    def _generate_loader(self, output_dir: Path, license_key: str):
+    def _generate_loader(self, output_dir: Path, license_key: str, customer_id: str):
         embedded_license = repr(license_key)
         license_secret_b64 = repr(base64.b64encode(self._license_secret).decode())
         encryption_secret_b64 = repr(base64.b64encode(self._encryption_secret).decode())
@@ -156,6 +170,7 @@ from pathlib import Path
 EMBEDDED_LICENSE = __EMBEDDED_LICENSE__
 EMBEDDED_LICENSE_SECRET_B64 = __LICENSE_SECRET_B64__
 EMBEDDED_ENCRYPT_SECRET_B64 = __ENCRYPT_SECRET_B64__
+CUSTOMER_ID = __CUSTOMER__
 
 # Captured ONCE at module level, where '__file__' is always defined.
 # (Using dir() inside a function only sees local names - do not change back.)
@@ -346,7 +361,7 @@ def validate_license(license_key, license_secret):
     lic_hw = data.get('hardware_fingerprint', 'NONE')
     cur_hw = _get_hardware_fingerprint()
 
-    debug_lines.append('Customer: ' + str(data.get('customer_id')))
+    debug_lines.append('User: ' + str(data.get('customer_id')))
     debug_lines.append('License HW: ' + str(lic_hw))
     debug_lines.append('Current HW: ' + cur_hw)
     debug_lines.append('Match: ' + str(lic_hw == cur_hw))
@@ -370,7 +385,7 @@ def validate_license(license_key, license_secret):
         if not lic_hw or lic_hw == 'NONE':
             raise ValueError('License is hardware-bound but contains no fingerprint')
         if lic_hw != cur_hw:
-            raise ValueError('License bound to different hardware. Your hardware ID: ' + cur_hw)
+            raise ValueError('License bound to different hardware. Your HWID: ' + cur_hw)
 
     return data
 
@@ -461,6 +476,7 @@ def _launch_in_thread(payloads, names, set_status, buttons):
     def worker():
         for name in names:
             try:
+                set_status('Running ' + name + '...')
                 code = _run_one(payloads, name)
                 set_status(name + ' exited with code ' + str(code))
             except Exception as e:
@@ -470,109 +486,111 @@ def _launch_in_thread(payloads, names, set_status, buttons):
                 btn.configure(state='normal')
             except Exception:
                 pass
-    t = threading.Thread(target=worker, daemon=True)
+    # Non-daemon: if the user closes the window while a program is still
+    # running, the process lingers invisibly until the program exits, so the
+    # PyInstaller onefile bootloader can delete its _MEIxxx temp folder
+    # without the "Failed to remove temporary directory" warning.
+    t = threading.Thread(target=worker, daemon=False)
     t.start()
 
 
 def _run_gui(payloads):
     import customtkinter as ctk
+    import tkinter as tk
     from tkinter import messagebox
 
-    ctk.set_appearance_mode('dark')
+    ctk.set_appearance_mode('light')
 
-    # iOS dark-mode palette
-    BG = '#1c1c1e'        # system background
-    CARD = '#2c2c2e'      # secondary background
-    ROW = '#3a3a3c'       # tertiary background
-    BLUE = '#0a84ff'      # system blue (dark)
-    GREEN = '#30d158'     # system green
-    TEXT = '#f2f2f7'      # label
-    MUTED = '#98989f'     # secondary label
+    # Classic Win9x / retro cheat-menu palette
+    BG = '#c0c0c0'         # classic silver
+    GOLD = '#c9a53a'       # gold accent (buttons, checks)
+    GOLD_DARK = '#a8842c'  # gold hover
+    GOLD_BORDER = '#6b5314'
+    BLACK = '#000000'
+    WHITE = '#ffffff'
+    GRAY_BORDER = '#808080'
 
     app = ctk.CTk()
     app.title('Orbital')
-    app.geometry('560x500')
+    app.geometry('620x540')
     app.resizable(False, False)
     app.configure(fg_color=BG)
 
-    font_title = ctk.CTkFont(family='Segoe UI', size=22, weight='bold')
-    font_body = ctk.CTkFont(family='Segoe UI', size=13)
-    font_small = ctk.CTkFont(family='Segoe UI', size=11)
-    font_mono = ctk.CTkFont(family='Consolas', size=13)
+    font_title = ctk.CTkFont(family='Tahoma', size=24, weight='bold')
+    font_group = ctk.CTkFont(family='Tahoma', size=12, weight='bold')
+    font_body = ctk.CTkFont(family='Tahoma', size=12)
+    font_small = ctk.CTkFont(family='Tahoma', size=10)
+    font_btn = ctk.CTkFont(family='Tahoma', size=12, weight='bold')
+    font_status = ctk.CTkFont(family='Tahoma', size=11)
 
     selected = set()
 
-    # Header
-    header = ctk.CTkFrame(app, fg_color='transparent')
-    header.pack(fill='x', padx=20, pady=(16, 2))
-    ctk.CTkLabel(header, text='⬡  Orbital', font=font_title, text_color=TEXT).pack(side='left')
-    ctk.CTkLabel(header, text='   licensed launcher', font=font_small, text_color=MUTED).pack(side='left', pady=(10, 0))
+    # Title
+    ctk.CTkLabel(app, text='Orbital', font=font_title, text_color=GOLD_DARK,
+                 fg_color=BG).pack(pady=(8, 2))
 
-    ctk.CTkLabel(app, text='PROGRAMS', font=ctk.CTkFont(family='Segoe UI', size=11, weight='bold'),
-                 text_color=MUTED, anchor='w').pack(fill='x', padx=26, pady=(10, 2))
+    # Programs group box (gold border, overlapping title)
+    group = ctk.CTkFrame(app, fg_color=BG, border_color=GOLD, border_width=2, corner_radius=0)
+    group.pack(fill='both', expand=True, padx=14, pady=(14, 6))
+    ctk.CTkLabel(group, text='Programs -', font=font_group, text_color=BLACK,
+                 fg_color=BG).place(x=10, y=-9)
 
-    list_holder = ctk.CTkFrame(app, fg_color=CARD, corner_radius=14)
-    list_holder.pack(fill='both', expand=True, padx=20, pady=(0, 10))
+    scroll = ctk.CTkScrollableFrame(group, fg_color=BG, corner_radius=0)
+    scroll.pack(fill='both', expand=True, padx=8, pady=8)
 
-    scroll = ctk.CTkScrollableFrame(list_holder, fg_color='transparent')
-    scroll.pack(fill='both', expand=True, padx=4, pady=4)
-
-    status_var = ctk.StringVar(value='Ready.')
+    status_var = ctk.StringVar(value='')
 
     def set_status(text):
         try:
-            status_var.set(text)
+            status_var.set('[ORBITAL v1.0] | PROFILE: [' + CUSTOMER_ID + '] | STATUS: [' + text + ']')
         except Exception:
             pass
 
-    def update_run_btn():
-        n = len(selected)
-        run_btn.configure(text=('▶  Run Selected (' + str(n) + ')') if n else '▶  Run Selected')
-
-    def toggle(name, row):
-        if name in selected:
-            selected.discard(name)
-            row.configure(fg_color=ROW)
-        else:
-            selected.add(name)
-            row.configure(fg_color=BLUE)
-        update_run_btn()
-
     def make_row(name):
-        row = ctk.CTkFrame(scroll, fg_color=ROW, corner_radius=10)
-        row.pack(fill='x', padx=6, pady=4)
-        lbl = ctk.CTkLabel(row, text=name, font=font_mono, text_color=TEXT, anchor='w')
-        lbl.pack(side='left', fill='x', expand=True, padx=(14, 6), pady=10)
+        row = ctk.CTkFrame(scroll, fg_color=BG, corner_radius=0)
+        row.pack(fill='x', padx=2, pady=1)
+        var = ctk.BooleanVar(value=(name in selected))
 
-        def on_play():
+        def on_toggle():
+            if var.get():
+                selected.add(name)
+            else:
+                selected.discard(name)
+            set_status(str(len(selected)) + ' selected')
+
+        cb = ctk.CTkCheckBox(row, text=name, variable=var, command=on_toggle,
+                             font=font_body, checkbox_width=18, checkbox_height=18,
+                             corner_radius=0, border_width=2, border_color=BLACK,
+                             fg_color=GOLD, hover_color=GOLD_DARK,
+                             checkmark_color=BLACK, text_color=BLACK)
+        cb.pack(side='left', anchor='w', padx=6, pady=4)
+
+        def on_run_one():
             start_run([name])
 
-        play = ctk.CTkButton(row, text='▶', width=38, height=30, corner_radius=8,
-                             fg_color=GREEN, hover_color='#28b84a', text_color='white',
-                             font=ctk.CTkFont(size=13, weight='bold'), command=on_play)
-        play.pack(side='right', padx=10, pady=6)
-
-        row.bind('<Button-1>', lambda e, n=name, r=row: toggle(n, r))
-        lbl.bind('<Button-1>', lambda e, n=name, r=row: toggle(n, r))
+        run1 = ctk.CTkButton(row, text='[Run]', width=56, height=22, corner_radius=0,
+                             fg_color=BG, hover_color='#d8d8d8', border_width=1,
+                             border_color=GRAY_BORDER, text_color=BLACK,
+                             font=font_small, command=on_run_one)
+        run1.pack(side='right', padx=8)
 
     def refresh():
         for w in scroll.winfo_children():
             w.destroy()
-        selected.clear()
         for name in sorted(payloads):
             make_row(name)
-        update_run_btn()
-        set_status('Found ' + str(len(payloads)) + ' program(s).')
+        set_status(str(len(payloads)) + ' program(s) loaded')
 
     def start_run(names):
         if not names:
+            set_status('Nothing selected')
             return
-        for btn in (run_btn, run_all_btn, refresh_btn):
+        for btn in (run_sel_btn, run_all_btn, refresh_btn):
             try:
                 btn.configure(state='disabled')
             except Exception:
                 pass
-        _launch_in_thread(payloads, names, set_status, (run_btn, run_all_btn, refresh_btn))
+        _launch_in_thread(payloads, names, set_status, (run_sel_btn, run_all_btn, refresh_btn))
 
     def on_run_selected():
         start_run(sorted(selected))
@@ -581,37 +599,54 @@ def _run_gui(payloads):
         start_run(sorted(payloads))
 
     def on_about():
-        messagebox.showinfo('About', 'Orbital Launcher\n\nLicensed software launcher.\nDo not redistribute this program.')
+        messagebox.showinfo('About', 'Orbital v1.0\nProfile: ' + CUSTOMER_ID +
+                            '\n\nLicensed software launcher.\nDo not redistribute this program.')
 
-    # Bottom action bar
-    bar = ctk.CTkFrame(app, fg_color='transparent')
-    bar.pack(fill='x', padx=20, pady=(0, 4))
+    # Button row
+    bar = ctk.CTkFrame(app, fg_color=BG, corner_radius=0)
+    bar.pack(fill='x', padx=14, pady=(0, 6))
 
-    run_btn = ctk.CTkButton(bar, text='▶  Run Selected', font=font_body, height=36, corner_radius=10,
-                            fg_color=BLUE, hover_color='#0071e3', text_color='white',
-                            command=on_run_selected)
-    run_btn.pack(side='left', padx=(0, 6))
+    def retro_btn(text, cmd, width=110):
+        return ctk.CTkButton(bar, text=text, command=cmd, width=width, height=30,
+                             corner_radius=0, fg_color=GOLD, hover_color=GOLD_DARK,
+                             text_color=BLACK, border_width=1, border_color=GOLD_BORDER,
+                             font=font_btn)
 
-    run_all_btn = ctk.CTkButton(bar, text='⏵⏵  Run All', font=font_body, height=36, corner_radius=10,
-                                fg_color=CARD, hover_color=ROW, text_color=TEXT,
-                                border_width=1, border_color='#48484a',
-                                command=on_run_all)
-    run_all_btn.pack(side='left', padx=(0, 6))
-
-    refresh_btn = ctk.CTkButton(bar, text='⟳', width=44, height=36, corner_radius=10,
-                                fg_color=CARD, hover_color=ROW, text_color=TEXT,
-                                border_width=1, border_color='#48484a',
-                                font=ctk.CTkFont(size=15, weight='bold'), command=refresh)
-    refresh_btn.pack(side='left')
-
-    about_btn = ctk.CTkButton(bar, text='ⓘ', width=44, height=36, corner_radius=10,
-                              fg_color=CARD, hover_color=ROW, text_color=TEXT,
-                              border_width=1, border_color='#48484a',
-                              font=ctk.CTkFont(size=14, weight='bold'), command=on_about)
+    run_sel_btn = retro_btn('[Run Selected]', on_run_selected)
+    run_sel_btn.pack(side='left', padx=(0, 8))
+    run_all_btn = retro_btn('[Run All]', on_run_all)
+    run_all_btn.pack(side='left', padx=(0, 8))
+    refresh_btn = retro_btn('[Refresh]', refresh, width=90)
+    refresh_btn.pack(side='left', padx=(0, 8))
+    about_btn = retro_btn('[About]', on_about, width=80)
     about_btn.pack(side='right')
 
-    status = ctk.CTkLabel(app, textvariable=status_var, font=font_small, text_color=MUTED, anchor='w')
-    status.pack(fill='x', padx=24, pady=(0, 12))
+    # Sunken status bar
+    status_bar = ctk.CTkFrame(app, fg_color=WHITE, corner_radius=0,
+                              border_width=1, border_color=GRAY_BORDER)
+    status_bar.pack(fill='x', padx=10, pady=(0, 10))
+    ctk.CTkLabel(status_bar, textvariable=status_var, font=font_status,
+                 text_color=BLACK, fg_color=WHITE, anchor='w').pack(fill='x', padx=6, pady=4)
+
+    # Watermark (bottom-right, above the status bar). Loads watermark.png from
+    # the exe folder, script folder, cwd, or the bundled _MEIPASS - no Pillow
+    # needed, tk.PhotoImage handles PNG natively.
+    wm_path = None
+    for base in _search_paths:
+        if base and (base / 'watermark.png').exists():
+            wm_path = base / 'watermark.png'
+            break
+    if wm_path:
+        try:
+            wm = tk.PhotoImage(file=str(wm_path))
+            if wm.width() > 240:
+                factor = max(1, wm.width() // 240)
+                wm = wm.subsample(factor, factor)
+            wm_label = tk.Label(app, image=wm, bg=BG, borderwidth=0)
+            wm_label.image = wm  # keep a reference so it is not garbage-collected
+            wm_label.place(relx=1.0, rely=1.0, x=-10, y=-48, anchor='se')
+        except Exception:
+            pass
 
     refresh()
     app.mainloop()
@@ -658,7 +693,7 @@ def main():
         _save_hardware_id(hw_id)
         msg = (
             'No license found.\n\n'
-            'Your hardware ID: ' + hw_id + '\n\n'
+            'Your HWID: ' + hw_id + '\n\n'
             'hardware_id.txt has been saved next to this program and on your Desktop.\n'
             'Send that file to the vendor to receive your license key.\n\n'
             'When you receive license.key, place it in the same folder as this\n'
@@ -674,8 +709,8 @@ def main():
         license_data = validate_license(LICENSE_KEY, license_secret)
     except ValueError as e:
         err_str = str(e)
-        if 'hardware ID:' in err_str:
-            hw_id = err_str.split('hardware ID:')[-1].strip()
+        if 'Your HWID:' in err_str:
+            hw_id = err_str.split('Your HWID:')[-1].strip()
             _save_hardware_id(hw_id)
             err_str += (
                 '\n\nhardware_id.txt has been saved next to this program and on your Desktop.\n'
@@ -735,6 +770,7 @@ if __name__ == '__main__':
             .replace('__EMBEDDED_LICENSE__', embedded_license)
             .replace('__LICENSE_SECRET_B64__', license_secret_b64)
             .replace('__ENCRYPT_SECRET_B64__', encryption_secret_b64)
+            .replace('__CUSTOMER__', repr(customer_id))
         )
 
         loader_path = output_dir / 'SecureLauncher.py'
@@ -757,24 +793,24 @@ def build_parser():
     p_protect.add_argument('exes', nargs='+', help='Path(s) to the EXE(s) to protect')
     p_protect.add_argument('-o', '--output', type=str, default='./protected',
                            help='Output directory (default: ./protected)')
-    p_protect.add_argument('--customer', type=str, required=True, help='Customer ID')
+    p_protect.add_argument('--customer', type=str, required=True, help='User ID')
     p_protect.add_argument('--days', type=int, default=365,
-                           help='License validity in days (default: 365)')
+                           help='Sub time in days (default: 365)')
     p_protect.add_argument('--hardware-id', type=str, default=None,
-                           help="Customer's hardware ID (contents of their hardware_id.txt)")
+                           help="User's HWID (contents of their hardware_id.txt)")
     p_protect.add_argument('--no-hardware', action='store_true',
                            help='Disable hardware binding (embedded license works on any PC)')
     p_protect.add_argument('--no-embed-license', action='store_true',
                            help='Ship WITHOUT a license. First run writes hardware_id.txt; '
-                                'customer later drops license.key next to the launcher.')
+                                'user later drops license.key next to the launcher.')
 
     p_gen = sub.add_parser('generate-license',
                            help='Generate a standalone license key')
-    p_gen.add_argument('--customer', type=str, required=True, help='Customer ID')
+    p_gen.add_argument('--customer', type=str, required=True, help='User ID')
     p_gen.add_argument('--days', type=int, default=365,
-                       help='License validity in days (default: 365)')
+                       help='Sub time in days (default: 365)')
     p_gen.add_argument('--hardware-id', type=str, default=None,
-                       help="Customer's hardware ID (contents of their hardware_id.txt)")
+                       help="User's HWID (contents of their hardware_id.txt)")
     p_gen.add_argument('--no-hardware', action='store_true',
                        help='Disable hardware binding')
 
@@ -816,9 +852,9 @@ def main():
             no_hardware=args.no_hardware,
         )
         print('[+] License generated')
-        print('Customer: ' + args.customer)
-        print('Hardware ID: ' + (args.hardware_id or '(unbound)'))
-        print('Expires: ' + lic['expires'])
+        print('User: ' + args.customer)
+        print('HWID: ' + (args.hardware_id or '(unbound)'))
+        print('Sub expires: ' + lic['expires'])
         # Machine-readable line for the CI workflow.
         # URL-safe base64 never contains ':' so cut -d: -f2- is safe.
         print('LICENSE_KEY:' + lic['license_key'])
