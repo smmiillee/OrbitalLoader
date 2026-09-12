@@ -83,13 +83,22 @@ EMBEDDED_LICENSE = ''' + embedded_license + r'''
 
 # Load license
 license_path = Path(__file__).parent / 'license.key'
+debug_lines = []
 if license_path.exists():
-    with open(license_path) as f:
-        LICENSE_KEY = f.read().strip()
+    with open(license_path, 'r', encoding='utf-8') as f:
+        raw_key = f.read().strip()
+    # Aggressive cleaning
+    raw_key = raw_key.encode('utf-8').decode('utf-8-sig').strip()
+    raw_key = ''.join(raw_key.split())
+    LICENSE_KEY = raw_key
+    debug_lines.append(f"Loaded from file: {license_path}")
+    debug_lines.append(f"Key length: {len(LICENSE_KEY)}")
 elif EMBEDDED_LICENSE:
     LICENSE_KEY = EMBEDDED_LICENSE
+    debug_lines.append("Using embedded license")
 else:
     LICENSE_KEY = None
+    debug_lines.append("No license found")
 
 # Verify license
 import zlib
@@ -117,7 +126,6 @@ def _get_hardware_fingerprint():
     return hashlib.sha256(combined.encode()).hexdigest()[:32]
 
 def _get_write_dir():
-    """Always use Desktop for persistent files."""
     desktop = Path.home() / 'Desktop'
     desktop.mkdir(exist_ok=True)
     return desktop
@@ -137,24 +145,29 @@ def _derive_keys(master):
 def validate_license(license_key, license_secret):
     if not license_key:
         raise ValueError("No license provided")
+    debug_lines.append(f"Validating key length: {len(license_key)}")
     padding = 4 - (len(license_key) % 4)
     if padding != 4:
         license_key += '=' * padding
     compressed = base64.urlsafe_b64decode(license_key)
     license_json = zlib.decompress(compressed)
     bundle = json.loads(license_json)
+    lic_hw = bundle['data'].get('hardware_fingerprint', 'NONE')
+    cur_hw = _get_hardware_fingerprint()
+    debug_lines.append(f"License customer: {bundle['data'].get('customer_id')}")
+    debug_lines.append(f"License hardware: {lic_hw}")
+    debug_lines.append(f"Current hardware: {cur_hw}")
+    debug_lines.append(f"Hardware bound: {bundle['data'].get('hardware_bound')}")
     payload = json.dumps(bundle['data'], sort_keys=True).encode()
     expected = hmac.new(license_secret, payload, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, bundle['signature']):
-        raise ValueError("Invalid license")
+        raise ValueError("Invalid license signature")
     import time
     if time.time() > bundle['data']['expires_at']:
         raise ValueError("License expired")
     if bundle['data'].get('hardware_bound'):
-        current_hw = _get_hardware_fingerprint()
-        stored_hw = bundle['data'].get('hardware_fingerprint')
-        if stored_hw and stored_hw != current_hw:
-            raise ValueError("License bound to different hardware. Your hardware ID: " + current_hw)
+        if lic_hw != cur_hw:
+            raise ValueError("License bound to different hardware. Your hardware ID: " + cur_hw)
     return bundle['data']
 
 def decrypt_payload(enc_path, meta, enc_secret):
@@ -193,7 +206,16 @@ def execute_exe(data):
         except:
             pass
 
+def _write_debug():
+    try:
+        debug_path = Path(sys.executable).parent / 'debug.txt'
+        with open(debug_path, 'w') as f:
+            f.write('\n'.join(debug_lines))
+    except:
+        pass
+
 def _show_error(title, message):
+    _write_debug()
     if sys.platform == 'win32':
         try:
             import ctypes
@@ -204,6 +226,7 @@ def _show_error(title, message):
         f.write(title + '\n' + message)
 
 def _show_info(title, message):
+    _write_debug()
     if sys.platform == 'win32':
         try:
             import ctypes
@@ -220,6 +243,7 @@ def main():
         hw_file = write_dir / 'hardware_id.txt'
         with open(hw_file, 'w') as f:
             f.write(hw_id)
+        debug_lines.append(f"No license - HW ID: {hw_id}")
         msg = "Your hardware ID: " + hw_id + "\n\nhardware_id.txt saved to your Desktop.\nSend that file to get a new license."
         _show_info("LICENSE REQUIRED", msg)
         return 1
@@ -228,6 +252,7 @@ def main():
         master = _reconstruct_secret()
         lic_secret, enc_secret = _derive_keys(master)
         license_data = validate_license(LICENSE_KEY, lic_secret)
+        debug_lines.append(f"License valid for: {license_data['customer_id']}")
     except ValueError as e:
         err_str = str(e)
         if 'hardware ID:' in err_str:
@@ -263,6 +288,7 @@ def main():
         meta = json.load(f)
 
     payload = decrypt_payload(enc_path, meta, enc_secret)
+    _write_debug()
     return execute_exe(payload)
 
 if __name__ == '__main__':
