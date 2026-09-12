@@ -2,14 +2,73 @@
 loader/license_manager.py
 """
 
+import os
+import sys
 import json
 import base64
 import hashlib
 import hmac
 import zlib
 import secrets
-import struct
 from datetime import datetime, timezone
+
+
+def generate_hardware_fingerprint() -> str:
+    """
+    Stable, cross-platform hardware fingerprint (32 hex chars).
+
+    Windows : HKLM\\SOFTWARE\\Microsoft\\Cryptography -> MachineGuid
+              + C: drive volume serial number
+    Linux   : /etc/machine-id (fallback /var/lib/dbus/machine-id)
+    macOS   : IOPlatformUUID
+
+    The hostname is intentionally NOT part of the fingerprint, so renaming
+    the PC does not invalidate licenses. Pointer size is also excluded so
+    32/64-bit rebuilds don't break binding.
+    """
+    components = []
+
+    if sys.platform == 'win32':
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\Cryptography') as key:
+                components.append(str(winreg.QueryValueEx(key, 'MachineGuid')[0]))
+        except Exception:
+            pass
+        try:
+            import ctypes
+            volume_serial = ctypes.c_ulong(0)
+            if ctypes.windll.kernel32.GetVolumeInformationW(
+                'C:' + os.sep, None, 0, ctypes.byref(volume_serial), None, None, None, 0
+            ):
+                components.append(str(volume_serial.value))
+        except Exception:
+            pass
+    else:
+        for path in ('/etc/machine-id', '/var/lib/dbus/machine-id'):
+            try:
+                with open(path, 'r') as f:
+                    components.append(f.read().strip())
+                break
+            except Exception:
+                continue
+        if sys.platform == 'darwin':
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ['ioreg', '-rd1', '-c', 'IOPlatformExpertDevice'],
+                    capture_output=True, text=True, timeout=5,
+                )
+                for line in result.stdout.splitlines():
+                    if 'IOPlatformUUID' in line:
+                        components.append(line.split('"')[-2])
+                        break
+            except Exception:
+                pass
+
+    components.append(sys.platform)
+    combined = '|'.join(str(c) for c in components if c)
+    return hashlib.sha256(combined.encode()).hexdigest()[:32]
 
 
 class LicenseError(Exception):
@@ -28,46 +87,31 @@ class LicenseManager:
     def __init__(self, license_secret: bytes):
         self._license_secret = license_secret
 
-    @staticmethod
-    def get_hardware_fingerprint() -> str:
-        import sys
-        import socket
-
-        components = []
-
-        for path in ['/etc/machine-id', '/var/lib/dbus/machine-id']:
-            try:
-                with open(path, 'r') as f:
-                    components.append(f.read().strip())
-                break
-            except Exception:
-                pass
-
-        try:
-            components.append(socket.gethostname())
-        except Exception:
-            pass
-
-        components.append(sys.platform)
-        components.append(struct.calcsize('P') * 8)
-
-        combined = '|'.join(str(c) for c in components if c)
-        return hashlib.sha256(combined.encode()).hexdigest()[:32]
-
     def generate_license(
         self,
         customer_id: str,
         expiry_days: int = 365,
         hardware_bound: bool = True,
         features: list = None,
+        hardware_fingerprint: str = None,
     ) -> dict:
+        """
+        Generate a signed license.
+
+        hardware_fingerprint: the CUSTOMER's HWID (contents of their
+        hardware_id.txt). If omitted while hardware_bound=True, this falls
+        back to THIS machine's fingerprint - which is almost never what you
+        want when building for a customer. Always pass it explicitly.
+        """
         created_at = datetime.now(timezone.utc)
         expires_at = created_at.timestamp() + (expiry_days * 86400)
 
-        hw_fp = self.get_hardware_fingerprint() if hardware_bound else None
+        hw_fp = None
+        if hardware_bound:
+            hw_fp = (hardware_fingerprint or '').strip() or generate_hardware_fingerprint()
 
         license_data = {
-            'version': 1,
+            'version': 2,
             'customer_id': customer_id,
             'created_at': created_at.isoformat(),
             'expires_at': expires_at,
@@ -80,11 +124,7 @@ class LicenseManager:
         }
 
         payload = json.dumps(license_data, sort_keys=True).encode()
-        signature = hmac.new(
-            self._license_secret,
-            payload,
-            hashlib.sha256
-        ).hexdigest()
+        signature = hmac.new(self._license_secret, payload, hashlib.sha256).hexdigest()
 
         license_bundle = {
             'data': license_data,
@@ -100,7 +140,7 @@ class LicenseManager:
             'license_key': license_key,
             'customer_id': customer_id,
             'expires': datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
-            'hardware_fingerprint': hw_fp
+            'hardware_fingerprint': hw_fp,
         }
 
     def validate_license(self, license_key: str) -> dict:
@@ -127,16 +167,17 @@ class LicenseManager:
 
         data = bundle['data']
 
-        now = datetime.now(timezone.utc).timestamp()
-        if now > data['expires_at']:
+        if datetime.now(timezone.utc).timestamp() > data['expires_at']:
             raise ExpiredLicenseError(
                 f"License expired on {datetime.fromtimestamp(data['expires_at'], tz=timezone.utc).isoformat()}"
             )
 
         if data.get('hardware_bound'):
-            current_hw = self.get_hardware_fingerprint()
+            current_hw = generate_hardware_fingerprint()
             stored_hw = data.get('hardware_fingerprint')
-            if stored_hw and stored_hw != current_hw:
+            if not stored_hw:
+                raise LicenseError("License is hardware-bound but contains no fingerprint")
+            if stored_hw != current_hw:
                 raise LicenseError(
                     f"License bound to different hardware. "
                     f"Expected: {stored_hw}, Got: {current_hw}"
