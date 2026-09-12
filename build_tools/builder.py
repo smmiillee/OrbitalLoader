@@ -209,7 +209,10 @@ def _show_info(title, message):
 def main():
     if not LICENSE_KEY:
         hw_id = _get_hardware_fingerprint()
-        msg = "Your hardware ID: " + hw_id + "\n\nSend this ID to get your license key.\nPlace license.key in the same folder as this EXE."
+        hw_file = Path(sys.executable).parent / 'hardware_id.txt'
+        with open(hw_file, 'w') as f:
+            f.write(hw_id)
+        msg = "Your hardware ID: " + hw_id + "\n\nhardware_id.txt has been created next to this EXE.\nSend that file (or the ID above) to get your license key.\nPlace license.key in the same folder as this EXE."
         _show_info("LICENSE REQUIRED", msg)
         return 1
 
@@ -218,7 +221,14 @@ def main():
         lic_secret, enc_secret = _derive_keys(master)
         license_data = validate_license(LICENSE_KEY, lic_secret)
     except ValueError as e:
-        _show_error("License Error", str(e))
+        err_str = str(e)
+        if 'hardware ID:' in err_str:
+            hw_id = err_str.split('hardware ID:')[-1].strip()
+            hw_file = Path(sys.executable).parent / 'hardware_id.txt'
+            with open(hw_file, 'w') as f:
+                f.write(hw_id)
+            err_str += '\n\nhardware_id.txt has been created. Send this file to get a new license.'
+        _show_error("License Error", err_str)
         return 1
 
     enc_path = None
