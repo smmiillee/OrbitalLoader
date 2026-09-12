@@ -28,33 +28,45 @@ class BuildOrchestrator:
         self._encryptor = PayloadEncryptor(self._encryption_secret)
 
     def protect_exe(self, exe_path, output_dir, customer_id, expiry_days=365,
-                    hardware_bound=True, hardware_fingerprint=None) -> dict:
-        if hardware_bound and not (hardware_fingerprint or '').strip():
+                    embed_license=True, hardware_bound=True,
+                    hardware_fingerprint=None) -> dict:
+        if embed_license and hardware_bound and not (hardware_fingerprint or '').strip():
             raise SystemExit(
-                "[!] Refusing to build: hardware binding is enabled but no "
+                "[!] Refusing to build: embedding a hardware-bound license but no "
                 "--hardware-id was supplied. The license would bind to this build\n"
                 "    machine instead of the customer's PC.\n"
-                "    Pass --hardware-id <customer HWID> or --no-hardware."
+                "    Pass --hardware-id <customer HWID>, --no-hardware, or "
+                "--no-embed-license."
             )
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"[+] Generating license for {customer_id}...")
-        license_info = self._license_mgr.generate_license(
-            customer_id=customer_id,
-            expiry_days=expiry_days,
-            features=['premium'],
-            hardware_bound=hardware_bound,
-            hardware_fingerprint=hardware_fingerprint,
-        )
-        if hardware_bound:
-            print(f"[+] License bound to HWID: {hardware_fingerprint}")
+        license_key = ''
+        license_info = None
 
-        license_path = output_dir / 'license.key'
-        with open(license_path, 'w') as f:
-            f.write(license_info['license_key'])
-        print("[+] License saved")
+        if embed_license:
+            print(f"[+] Generating license for {customer_id}...")
+            license_info = self._license_mgr.generate_license(
+                customer_id=customer_id,
+                expiry_days=expiry_days,
+                features=['premium'],
+                hardware_bound=hardware_bound,
+                hardware_fingerprint=hardware_fingerprint,
+            )
+            if hardware_bound:
+                print(f"[+] License bound to HWID: {hardware_fingerprint}")
+
+            license_path = output_dir / 'license.key'
+            with open(license_path, 'w') as f:
+                f.write(license_info['license_key'])
+            print("[+] License saved")
+            license_key = license_info['license_key']
+        else:
+            print("[+] No embedded license - the customer's first run will")
+            print("    print their hardware ID and write hardware_id.txt.")
+            print("    Generate their license with 'generate-license', then")
+            print("    have them drop license.key next to the launcher.")
 
         print(f"[+] Encrypting {exe_path}...")
         payload_path = output_dir / 'payload.enc'
@@ -64,15 +76,18 @@ class BuildOrchestrator:
         with open(meta_path, 'w') as f:
             json.dump(meta, f, indent=2)
 
-        self._generate_loader(output_dir, license_info['license_key'])
+        self._generate_loader(output_dir, license_key)
 
-        return {
+        result = {
             'customer_id': customer_id,
-            'license_key': license_info['license_key'],
-            'expires': license_info['expires'],
-            'hardware_fingerprint': license_info['hardware_fingerprint'],
+            'embedded_license': bool(embed_license),
+            'expires': license_info['expires'] if license_info else None,
+            'hardware_fingerprint': license_info['hardware_fingerprint'] if license_info else None,
             'output_dir': str(output_dir),
         }
+        if license_info:
+            result['license_key'] = license_info['license_key']
+        return result
 
     def generate_license(self, customer_id, expiry_days=365,
                          hardware_id=None, no_hardware=False) -> dict:
@@ -379,8 +394,10 @@ def main():
         msg = (
             'No license found.\n\n'
             'Your hardware ID: ' + hw_id + '\n\n'
-            'hardware_id.txt has been saved next to the launcher and on your Desktop.\n'
-            'Send that file to receive a license key.'
+            'hardware_id.txt has been saved next to this program and on your Desktop.\n'
+            'Send that file to the vendor to receive your license key.\n\n'
+            'When you receive license.key, place it in the same folder as this\n'
+            'program and run it again.'
         )
         _show_info('LICENSE REQUIRED', msg)
         return 1
@@ -396,8 +413,8 @@ def main():
             hw_id = err_str.split('hardware ID:')[-1].strip()
             _save_hardware_id(hw_id)
             err_str += (
-                '\n\nhardware_id.txt has been saved next to the launcher and on your Desktop.\n'
-                'Send that file to receive a new license key.'
+                '\n\nhardware_id.txt has been saved next to this program and on your Desktop.\n'
+                'Send that file to the vendor to receive a new license key.'
             )
         _show_error('License Error', err_str)
         return 1
@@ -475,7 +492,7 @@ def build_parser():
 
     p_protect = sub.add_parser(
         'protect-exe',
-        help='Encrypt an EXE, generate its license and build the launcher',
+        help='Encrypt an EXE and build the launcher',
     )
     p_protect.add_argument('exe', type=str, help='Path to the EXE to protect')
     p_protect.add_argument('-o', '--output', type=str, default='./protected',
@@ -486,7 +503,10 @@ def build_parser():
     p_protect.add_argument('--hardware-id', type=str, default=None,
                            help="Customer's hardware ID (contents of their hardware_id.txt)")
     p_protect.add_argument('--no-hardware', action='store_true',
-                           help='Disable hardware binding')
+                           help='Disable hardware binding (embedded license works on any PC)')
+    p_protect.add_argument('--no-embed-license', action='store_true',
+                           help='Ship WITHOUT a license. First run writes hardware_id.txt; '
+                                'customer later drops license.key next to the launcher.')
 
     p_gen = sub.add_parser('generate-license',
                            help='Generate a standalone license key')
@@ -508,12 +528,17 @@ def main():
     if args.command == 'protect-exe':
         if args.no_hardware and args.hardware_id:
             parser.error('--no-hardware and --hardware-id are mutually exclusive')
+        if args.no_embed_license and args.hardware_id:
+            print('[!] Note: --hardware-id ignored - no license is being embedded.')
+        if args.no_embed_license and args.no_hardware:
+            parser.error('--no-embed-license and --no-hardware are mutually exclusive')
         orch = BuildOrchestrator()
         result = orch.protect_exe(
             exe_path=args.exe,
             output_dir=args.output,
             customer_id=args.customer,
             expiry_days=args.days,
+            embed_license=not args.no_embed_license,
             hardware_bound=not args.no_hardware,
             hardware_fingerprint=args.hardware_id,
         )
