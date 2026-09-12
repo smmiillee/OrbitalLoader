@@ -214,12 +214,14 @@ def _get_write_dirs():
 
 
 def _write_debug(content):
+    # Append-mode with a timestamp header, so each entry survives later runs.
     text = str(content)
     for base in _get_write_dirs():
         try:
             base.mkdir(parents=True, exist_ok=True)
-            with open(base / 'debug.txt', 'w', encoding='utf-8') as f:
-                f.write(text)
+            with open(base / 'debug.txt', 'a', encoding='utf-8') as f:
+                f.write('\n==== ' + datetime.now(timezone.utc).isoformat() + ' ====\n')
+                f.write(text + '\n')
             return
         except Exception:
             continue
@@ -495,50 +497,53 @@ def _launch_in_thread(payloads, names, set_status, buttons):
 
 
 def _run_gui(payloads):
-    import customtkinter as ctk
     import tkinter as tk
     from tkinter import messagebox
 
-    ctk.set_appearance_mode('light')
-
-    # Classic Win9x / retro cheat-menu palette
+    # Classic Win9x palette - real native widgets this time
     BG = '#c0c0c0'         # classic silver
-    GOLD = '#c9a53a'       # gold accent (buttons, checks)
-    GOLD_DARK = '#a8842c'  # gold hover
-    GOLD_BORDER = '#6b5314'
+    GOLD = '#c9a53a'
+    GOLD_DARK = '#a8842c'
     BLACK = '#000000'
     WHITE = '#ffffff'
-    GRAY_BORDER = '#808080'
 
-    app = ctk.CTk()
+    app = tk.Tk()
     app.title('Orbital')
     app.geometry('620x540')
     app.resizable(False, False)
-    app.configure(fg_color=BG)
+    app.configure(bg=BG)
 
-    font_title = ctk.CTkFont(family='Tahoma', size=24, weight='bold')
-    font_group = ctk.CTkFont(family='Tahoma', size=12, weight='bold')
-    font_body = ctk.CTkFont(family='Tahoma', size=12)
-    font_small = ctk.CTkFont(family='Tahoma', size=10)
-    font_btn = ctk.CTkFont(family='Tahoma', size=12, weight='bold')
-    font_status = ctk.CTkFont(family='Tahoma', size=11)
+    F_TITLE = ('Tahoma', 22, 'bold')
+    F_GROUP = ('Tahoma', 10, 'bold')
+    F_BODY = ('Tahoma', 10)
+    F_BTN = ('Tahoma', 10, 'bold')
+    F_STATUS = ('Tahoma', 9)
 
     selected = set()
 
-    # Title
-    ctk.CTkLabel(app, text='Orbital', font=font_title, text_color=GOLD_DARK,
-                 fg_color=BG).pack(pady=(8, 2))
+    tk.Label(app, text='Orbital', font=F_TITLE, fg=GOLD_DARK, bg=BG).pack(pady=(6, 2))
 
-    # Programs group box (gold border, overlapping title)
-    group = ctk.CTkFrame(app, fg_color=BG, border_color=GOLD, border_width=2, corner_radius=0)
-    group.pack(fill='both', expand=True, padx=14, pady=(14, 6))
-    ctk.CTkLabel(group, text='Programs -', font=font_group, text_color=BLACK,
-                 fg_color=BG).place(x=10, y=-9)
+    # Programs group box - LabelFrame naturally draws its label sitting
+    # in the border line, exactly like the reference menus.
+    group = tk.LabelFrame(app, text='Programs -', font=F_GROUP, fg=BLACK, bg=BG,
+                          bd=0, highlightthickness=1, highlightbackground=GOLD)
+    group.pack(fill='both', expand=True, padx=14, pady=(10, 6))
 
-    scroll = ctk.CTkScrollableFrame(group, fg_color=BG, corner_radius=0)
-    scroll.pack(fill='both', expand=True, padx=8, pady=8)
+    canvas = tk.Canvas(group, bg=BG, highlightthickness=0, bd=0)
+    vbar = tk.Scrollbar(group, orient='vertical', command=canvas.yview)
+    inner = tk.Frame(canvas, bg=BG)
+    inner.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+    canvas.create_window((0, 0), window=inner, anchor='nw')
+    canvas.configure(yscrollcommand=vbar.set)
 
-    status_var = ctk.StringVar(value='')
+    def on_mousewheel(event):
+        canvas.yview_scroll(int(-event.delta / 120), 'units')
+    canvas.bind_all('<MouseWheel>', on_mousewheel)
+
+    vbar.pack(side='right', fill='y')
+    canvas.pack(side='left', fill='both', expand=True, padx=4, pady=4)
+
+    status_var = tk.StringVar()
 
     def set_status(text):
         try:
@@ -547,35 +552,32 @@ def _run_gui(payloads):
             pass
 
     def make_row(name):
-        row = ctk.CTkFrame(scroll, fg_color=BG, corner_radius=0)
-        row.pack(fill='x', padx=2, pady=1)
-        var = ctk.BooleanVar(value=(name in selected))
+        row = tk.Frame(inner, bg=BG)
+        row.pack(fill='x', padx=6, pady=2)
+        var = tk.BooleanVar(value=(name in selected))
 
-        def on_toggle():
-            if var.get():
-                selected.add(name)
+        def on_toggle(n=name, v=var):
+            if v.get():
+                selected.add(n)
             else:
-                selected.discard(name)
+                selected.discard(n)
             set_status(str(len(selected)) + ' selected')
 
-        cb = ctk.CTkCheckBox(row, text=name, variable=var, command=on_toggle,
-                             font=font_body, checkbox_width=18, checkbox_height=18,
-                             corner_radius=0, border_width=2, border_color=BLACK,
-                             fg_color=GOLD, hover_color=GOLD_DARK,
-                             checkmark_color=BLACK, text_color=BLACK)
-        cb.pack(side='left', anchor='w', padx=6, pady=4)
+        cb = tk.Checkbutton(row, text=name, variable=var, command=on_toggle,
+                            font=F_BODY, bg=BG, fg=BLACK, activebackground=BG,
+                            activeforeground=BLACK, anchor='w')
+        cb.pack(side='left', fill='x', expand=True)
 
-        def on_run_one():
-            start_run([name])
+        def on_run_one(n=name):
+            start_run([n])
 
-        run1 = ctk.CTkButton(row, text='[Run]', width=56, height=22, corner_radius=0,
-                             fg_color=BG, hover_color='#d8d8d8', border_width=1,
-                             border_color=GRAY_BORDER, text_color=BLACK,
-                             font=font_small, command=on_run_one)
-        run1.pack(side='right', padx=8)
+        run1 = tk.Button(row, text='[Run]', font=('Tahoma', 9), bg=BG, fg=BLACK,
+                         relief='raised', bd=2, activebackground='#d8d8d8',
+                         activeforeground=BLACK, width=7, command=on_run_one)
+        run1.pack(side='right', padx=4, pady=1)
 
     def refresh():
-        for w in scroll.winfo_children():
+        for w in inner.winfo_children():
             w.destroy()
         for name in sorted(payloads):
             make_row(name)
@@ -602,35 +604,32 @@ def _run_gui(payloads):
         messagebox.showinfo('About', 'Orbital v1.0\nProfile: ' + CUSTOMER_ID +
                             '\n\nLicensed software launcher.\nDo not redistribute this program.')
 
-    # Button row
-    bar = ctk.CTkFrame(app, fg_color=BG, corner_radius=0)
+    bar = tk.Frame(app, bg=BG)
     bar.pack(fill='x', padx=14, pady=(0, 6))
 
-    def retro_btn(text, cmd, width=110):
-        return ctk.CTkButton(bar, text=text, command=cmd, width=width, height=30,
-                             corner_radius=0, fg_color=GOLD, hover_color=GOLD_DARK,
-                             text_color=BLACK, border_width=1, border_color=GOLD_BORDER,
-                             font=font_btn)
+    def retro_btn(text, cmd, width):
+        return tk.Button(bar, text=text, command=cmd, width=width, font=F_BTN,
+                         bg=GOLD, fg=BLACK, relief='raised', bd=2,
+                         activebackground=GOLD_DARK, activeforeground=BLACK)
 
-    run_sel_btn = retro_btn('[Run Selected]', on_run_selected)
+    run_sel_btn = retro_btn('[Run Selected]', on_run_selected, 14)
     run_sel_btn.pack(side='left', padx=(0, 8))
-    run_all_btn = retro_btn('[Run All]', on_run_all)
+    run_all_btn = retro_btn('[Run All]', on_run_all, 11)
     run_all_btn.pack(side='left', padx=(0, 8))
-    refresh_btn = retro_btn('[Refresh]', refresh, width=90)
+    refresh_btn = retro_btn('[Refresh]', refresh, 10)
     refresh_btn.pack(side='left', padx=(0, 8))
-    about_btn = retro_btn('[About]', on_about, width=80)
+    about_btn = retro_btn('[About]', on_about, 9)
     about_btn.pack(side='right')
 
-    # Sunken status bar
-    status_bar = ctk.CTkFrame(app, fg_color=WHITE, corner_radius=0,
-                              border_width=1, border_color=GRAY_BORDER)
-    status_bar.pack(fill='x', padx=10, pady=(0, 10))
-    ctk.CTkLabel(status_bar, textvariable=status_var, font=font_status,
-                 text_color=BLACK, fg_color=WHITE, anchor='w').pack(fill='x', padx=6, pady=4)
+    # Sunken white status bar
+    status = tk.Label(app, textvariable=status_var, font=F_STATUS, bg=WHITE, fg=BLACK,
+                      relief='sunken', bd=2, anchor='w')
+    status.pack(fill='x', padx=10, pady=(0, 10))
 
-    # Watermark (bottom-right, above the status bar). Loads watermark.png from
-    # the exe folder, script folder, cwd, or the bundled _MEIPASS - no Pillow
-    # needed, tk.PhotoImage handles PNG natively.
+    # Watermark (top-right, next to the title). Loads watermark.png from the
+    # exe folder, script folder, cwd, or the bundled _MEIPASS. tk.PhotoImage
+    # handles PNG (and GIF) natively - a JPEG renamed to .png will NOT load,
+    # and the reason gets recorded in debug.txt.
     wm_path = None
     for base in _search_paths:
         if base and (base / 'watermark.png').exists():
@@ -642,11 +641,16 @@ def _run_gui(payloads):
             if wm.width() > 240:
                 factor = max(1, wm.width() // 240)
                 wm = wm.subsample(factor, factor)
-            wm_label = tk.Label(app, image=wm, bg=BG, borderwidth=0)
+            wm_label = tk.Label(app, image=wm, bg=BG, bd=0, highlightthickness=0)
             wm_label.image = wm  # keep a reference so it is not garbage-collected
-            wm_label.place(relx=1.0, rely=1.0, x=-10, y=-48, anchor='se')
-        except Exception:
-            pass
+            wm_label.place(relx=1.0, rely=0.0, x=-10, y=6, anchor='ne')
+            _write_debug('Watermark: loaded from ' + str(wm_path) +
+                         ' (' + str(wm.width()) + 'x' + str(wm.height()) + ')')
+        except Exception as e:
+            _write_debug('Watermark: FAILED to load ' + str(wm_path) + ' - ' + repr(e) +
+                         ' (is it a real PNG? A JPEG renamed to .png will not load)')
+    else:
+        _write_debug('Watermark: watermark.png not found next to the launcher or in the bundle')
 
     refresh()
     app.mainloop()
@@ -750,7 +754,7 @@ def main():
             _run_gui(payloads)
             return 0
         except ImportError:
-            # customtkinter not available - fall back to the text menu
+            # GUI unavailable - fall back to the text menu
             return _run_cli(payloads)
     except ValueError as e:
         _show_error('Error', str(e))
