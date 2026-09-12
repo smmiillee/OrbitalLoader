@@ -4,20 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       customer_id:
-        description: 'Customer ID for license'
+        description: 'User ID (shown in the loader status bar)'
         required: true
         type: string
       expiry_days:
-        description: 'License validity (days)'
+        description: 'Sub time (days)'
         default: '365'
         type: string
       embed_license:
-        description: 'Embed a license now? UNCHECK for first-run flow (customer gets HWID, you run Generate License, they drop license.key next to the EXE)'
+        description: 'Embed a license now? UNCHECK for first-run flow (user gets HWID, you run Generate License, they drop license.key next to the EXE)'
         required: false
         default: true
         type: boolean
       hardware_id:
-        description: "Hardware ID from hardware_id.txt (only used when 'Embed a license now' is checked)"
+        description: "User's HWID from hardware_id.txt (only used when 'Embed a license now' is checked)"
         required: false
         default: ''
         type: string
@@ -91,6 +91,14 @@ jobs:
             echo "Adding data: $ABS"
             ARGS+=(--add-data "$ABS;.")
           done
+          # Optional watermark shown in the launcher UI
+          if [ -f assets/watermark.png ]; then
+            WMA=$(cygpath -w "$(pwd)/assets/watermark.png")
+            echo "Adding watermark: $WMA"
+            ARGS+=(--add-data "$WMA;.")
+          else
+            echo "[i] assets/watermark.png not found - building without watermark"
+          fi
           pyinstaller "${ARGS[@]}" protected/SecureLauncher.py
           echo "=== dist/ ==="
           ls -la dist
