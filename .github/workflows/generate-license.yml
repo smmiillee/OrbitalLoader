@@ -6,12 +6,15 @@ on:
       customer_id:
         description: 'Customer name/ID'
         required: true
+        type: string
       hardware_id:
-        description: 'Hardware ID from customer'
+        description: "Customer's hardware ID (contents of hardware_id.txt)"
         required: true
+        type: string
       expiry_days:
         description: 'License validity (days)'
         default: '365'
+        type: string
 
 jobs:
   generate:
@@ -32,49 +35,71 @@ jobs:
       - name: Generate license
         env:
           LOADER_MASTER_SECRET: ${{ secrets.LOADER_MASTER_SECRET }}
+          HWID: ${{ github.event.inputs.hardware_id }}
+          CUSTOMER: ${{ github.event.inputs.customer_id }}
+          DAYS: ${{ github.event.inputs.expiry_days }}
         run: |
-          HWID=$(echo "${{ github.event.inputs.hardware_id }}" | tr -d '[:space:]')
-          echo "Input HWID: '${{ github.event.inputs.hardware_id }}'"
-          echo "Stripped HWID: '$HWID'"
-          
+          set -e
+          CLEAN_HWID=$(printf '%s' "$HWID" | tr -d '[:space:]')
+          if [ -z "$CLEAN_HWID" ]; then
+            echo "::error::hardware_id input is empty"
+            exit 1
+          fi
+          echo "Customer HWID: $CLEAN_HWID"
+
           python -m build_tools.builder generate-license \
-            --customer "${{ github.event.inputs.customer_id }}" \
-            --days ${{ github.event.inputs.expiry_days }} \
-            --hardware-id "$HWID" \
-            > raw_output.txt
-          
-          echo "=== Full output ==="
+            --customer "$CUSTOMER" \
+            --days "$DAYS" \
+            --hardware-id "$CLEAN_HWID" > raw_output.txt
+
           cat raw_output.txt
-          
-          # Extract license key - line after "License key for"
-          LICENSE_KEY=$(grep -A 1 "^License key for" raw_output.txt | tail -n 1 | tr -d '[:space:]')
-          echo "=== Extracted key length: ${#LICENSE_KEY}"
-          
-          echo -n "$LICENSE_KEY" > license.key
-          
-          python3 << 'PYEOF'
-          import base64, zlib, json
-          with open('license.key', 'r') as f:
+
+          # Extract the machine-readable LICENSE_KEY: line
+          LICENSE_KEY=$(grep '^LICENSE_KEY:' raw_output.txt | head -n 1 | cut -d: -f2-)
+          if [ -z "$LICENSE_KEY" ]; then
+            echo "::error::Could not extract license key from builder output"
+            exit 1
+          fi
+          echo "Key length: ${#LICENSE_KEY}"
+          printf '%s' "$LICENSE_KEY" > license.key
+
+          # Verify the license actually contains the customer's HWID.
+          # HWID is passed via env because the heredoc delimiter is quoted.
+          HWID="$CLEAN_HWID" python3 << 'PYEOF'
+          import os, base64, zlib, json
+
+          with open('license.key') as f:
               key = f.read().strip()
-          print(f"Key length: {len(key)}")
           padding = 4 - (len(key) % 4)
           if padding != 4:
               key += '=' * padding
-          compressed = base64.urlsafe_b64decode(key)
-          data = json.loads(zlib.decompress(compressed))
-          print(f"Customer: {data['data'].get('customer_id')}")
-          print(f"License HW: {data['data'].get('hardware_fingerprint')}")
-          print(f"Expected HW: '$HWID'")
-          print(f"MATCH: {data['data'].get('hardware_fingerprint') == '$HWID'}")
+          bundle = json.loads(zlib.decompress(base64.urlsafe_b64decode(key)))
+
+          stored = bundle['data'].get('hardware_fingerprint')
+          expected = os.environ['HWID']
+          print('Customer:    ', bundle['data'].get('customer_id'))
+          print('License HW:  ', stored)
+          print('Expected HW: ', expected)
+          print('MATCH:       ', stored == expected)
+          if stored != expected:
+              raise SystemExit('HWID mismatch after generation - refusing to ship')
           PYEOF
 
       - name: Create artifact
+        env:
+          CUSTOMER: ${{ github.event.inputs.customer_id }}
+          HWID: ${{ github.event.inputs.hardware_id }}
+          DAYS: ${{ github.event.inputs.expiry_days }}
         run: |
+          set -e
+          CLEAN_HWID=$(printf '%s' "$HWID" | tr -d '[:space:]')
           mkdir -p license_output
           cp license.key license_output/
-          echo "Customer: ${{ github.event.inputs.customer_id }}" > license_output/README.txt
-          echo "Hardware: ${{ github.event.inputs.hardware_id }}" >> license_output/README.txt
-          echo "Expiry: ${{ github.event.inputs.expiry_days }} days" >> license_output/README.txt
+          {
+            echo "Customer: $CUSTOMER"
+            echo "Hardware: $CLEAN_HWID"
+            echo "Expiry: $DAYS days"
+          } > license_output/README.txt
 
       - name: Upload license
         uses: actions/upload-artifact@v4
