@@ -1,18 +1,18 @@
-name: Generate License for Customer
+name: Generate License for User
 
 on:
   workflow_dispatch:
     inputs:
       customer_id:
-        description: 'Customer name/ID'
+        description: 'User name/ID'
         required: true
         type: string
       hardware_id:
-        description: "Customer's hardware ID (contents of hardware_id.txt)"
+        description: "User's HWID (contents of hardware_id.txt)"
         required: true
         type: string
       expiry_days:
-        description: 'License validity (days)'
+        description: 'Sub time (days)'
         default: '365'
         type: string
 
@@ -45,7 +45,7 @@ jobs:
             echo "::error::hardware_id input is empty"
             exit 1
           fi
-          echo "Customer HWID: $CLEAN_HWID"
+          echo "User HWID: $CLEAN_HWID"
 
           python -m build_tools.builder generate-license \
             --customer "$CUSTOMER" \
@@ -63,7 +63,7 @@ jobs:
           echo "Key length: ${#LICENSE_KEY}"
           printf '%s' "$LICENSE_KEY" > license.key
 
-          # Verify the license actually contains the customer's HWID.
+          # Verify the license actually contains the user's HWID.
           # HWID is passed via env because the heredoc delimiter is quoted.
           HWID="$CLEAN_HWID" python3 << 'PYEOF'
           import os, base64, zlib, json
@@ -77,7 +77,7 @@ jobs:
 
           stored = bundle['data'].get('hardware_fingerprint')
           expected = os.environ['HWID']
-          print('Customer:    ', bundle['data'].get('customer_id'))
+          print('User:        ', bundle['data'].get('customer_id'))
           print('License HW:  ', stored)
           print('Expected HW: ', expected)
           print('MATCH:       ', stored == expected)
@@ -96,9 +96,9 @@ jobs:
           mkdir -p license_output
           cp license.key license_output/
           {
-            echo "Customer: $CUSTOMER"
-            echo "Hardware: $CLEAN_HWID"
-            echo "Expiry: $DAYS days"
+            echo "User: $CUSTOMER"
+            echo "HWID: $CLEAN_HWID"
+            echo "Sub time: $DAYS days"
           } > license_output/README.txt
 
       - name: Upload license
