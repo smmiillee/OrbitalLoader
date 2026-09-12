@@ -19,7 +19,7 @@ class EnvVault:
         value = os.environ.get(full_name)
         if not value:
             raise RuntimeError(f"Missing secret: {full_name}")
-        # Add padding if needed for base64
+        # Fix base64 padding
         padding = 4 - (len(value) % 4)
         if padding != 4:
             value += '=' * padding
