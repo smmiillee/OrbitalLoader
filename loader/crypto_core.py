@@ -7,7 +7,6 @@ import base64
 import hashlib
 import hmac
 
-
 class EnvVault:
     """Production: Secrets from environment variables."""
 
@@ -28,10 +27,8 @@ class EnvVault:
     def get_master_secret(self) -> bytes:
         return self._get('MASTER_SECRET')
 
-
 def derive_license_secret(master: bytes) -> bytes:
     return hmac.new(b'license-v1', master, hashlib.sha256).digest()
-
 
 def derive_encryption_secret(master: bytes) -> bytes:
     return hmac.new(b'encrypt-v1', master, hashlib.sha256).digest()
