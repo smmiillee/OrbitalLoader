@@ -83,9 +83,13 @@ jobs:
           ARGS=(--onefile --noconsole --name SecureLauncher --clean
                 --distpath ./dist --workpath ./build_tmp --specpath ./build_tmp
                 --collect-all customtkinter)
+          # PyInstaller resolves --add-data paths relative to the SPEC file's
+          # folder, not the working directory - so pass absolute Windows paths.
           for f in protected/payload_*.enc protected/payload_*.meta; do
             [ -e "$f" ] || continue
-            ARGS+=(--add-data "$f;.")
+            ABS=$(cygpath -w "$(pwd)/$f")
+            echo "Adding data: $ABS"
+            ARGS+=(--add-data "$ABS;.")
           done
           pyinstaller "${ARGS[@]}" protected/SecureLauncher.py
           echo "=== dist/ ==="
