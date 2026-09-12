@@ -117,28 +117,10 @@ def _get_hardware_fingerprint():
     return hashlib.sha256(combined.encode()).hexdigest()[:32]
 
 def _get_write_dir():
-    """Find a writable directory that persists after exit."""
-    cwd = Path.cwd()
-    try:
-        test = cwd / '.write_test'
-        test.write_text('test')
-        test.unlink()
-        return cwd
-    except:
-        pass
-    for path in [
-        Path.home() / 'Downloads',
-        Path.home() / 'Desktop',
-        Path.home(),
-    ]:
-        try:
-            test = path / '.write_test'
-            test.write_text('test')
-            test.unlink()
-            return path
-        except:
-            pass
-    return Path(tempfile.gettempdir())
+    """Always use Desktop for persistent files."""
+    desktop = Path.home() / 'Desktop'
+    desktop.mkdir(exist_ok=True)
+    return desktop
 
 def _reconstruct_secret():
     master_b64 = ''' + master_secret_b64 + r'''
@@ -238,7 +220,7 @@ def main():
         hw_file = write_dir / 'hardware_id.txt'
         with open(hw_file, 'w') as f:
             f.write(hw_id)
-        msg = "Your hardware ID: " + hw_id + "\n\nhardware_id.txt has been saved to:\n" + str(hw_file) + "\n\nSend that file (or the ID above) to get your license key."
+        msg = "Your hardware ID: " + hw_id + "\n\nhardware_id.txt saved to your Desktop.\nSend that file to get a new license."
         _show_info("LICENSE REQUIRED", msg)
         return 1
 
@@ -254,7 +236,7 @@ def main():
             hw_file = write_dir / 'hardware_id.txt'
             with open(hw_file, 'w') as f:
                 f.write(hw_id)
-            err_str += '\n\nhardware_id.txt saved to:\n' + str(hw_file) + '\nSend this file to get a new license.'
+            err_str += '\n\nhardware_id.txt saved to your Desktop.\nSend that file to get a new license.'
         _show_error("License Error", err_str)
         return 1
 
