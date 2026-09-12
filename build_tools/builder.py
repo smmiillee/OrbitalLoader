@@ -313,14 +313,21 @@ def main():
             features=['premium'],
             hardware_bound=True
         )
-        lic_data = json.loads(base64.urlsafe_b64decode(lic['license_key'] + '=' * (4 - len(lic['license_key']) % 4)))
+        # Decompress existing license
+        import zlib
+        padding = 4 - (len(lic['license_key']) % 4)
+        compressed = base64.urlsafe_b64decode(lic['license_key'] + ('=' * padding if padding != 4 else ''))
+        lic_json = zlib.decompress(compressed)
+        lic_data = json.loads(lic_json)
+        # Override hardware fingerprint
         lic_data['data']['hardware_fingerprint'] = args.hardware_id
+        # Re-sign
         payload = json.dumps(lic_data['data'], sort_keys=True).encode()
         import hmac, hashlib
         lic_data['signature'] = hmac.new(derive_license_secret(orch._master), payload, hashlib.sha256).hexdigest()
-        lic_json = json.dumps(lic_data)
-        import zlib
-        lic_key = base64.urlsafe_b64encode(zlib.compress(lic_json.encode())).decode().rstrip('=')
+        # Re-compress
+        new_json = json.dumps(lic_data)
+        lic_key = base64.urlsafe_b64encode(zlib.compress(new_json.encode())).decode().rstrip('=')
         print(f"License key for {args.customer}:")
         print(lic_key)
 
