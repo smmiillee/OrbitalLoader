@@ -7,6 +7,7 @@ import sys
 import json
 import base64
 import argparse
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -115,6 +116,30 @@ def _get_hardware_fingerprint():
     combined = '|'.join(str(c) for c in components if c)
     return hashlib.sha256(combined.encode()).hexdigest()[:32]
 
+def _get_write_dir():
+    """Find a writable directory that persists after exit."""
+    cwd = Path.cwd()
+    try:
+        test = cwd / '.write_test'
+        test.write_text('test')
+        test.unlink()
+        return cwd
+    except:
+        pass
+    for path in [
+        Path.home() / 'Downloads',
+        Path.home() / 'Desktop',
+        Path.home(),
+    ]:
+        try:
+            test = path / '.write_test'
+            test.write_text('test')
+            test.unlink()
+            return path
+        except:
+            pass
+    return Path(tempfile.gettempdir())
+
 def _reconstruct_secret():
     master_b64 = ''' + master_secret_b64 + r'''
     padding = 4 - (len(master_b64) % 4)
@@ -209,10 +234,11 @@ def _show_info(title, message):
 def main():
     if not LICENSE_KEY:
         hw_id = _get_hardware_fingerprint()
-        hw_file = Path(sys.executable).parent / 'hardware_id.txt'
+        write_dir = _get_write_dir()
+        hw_file = write_dir / 'hardware_id.txt'
         with open(hw_file, 'w') as f:
             f.write(hw_id)
-        msg = "Your hardware ID: " + hw_id + "\n\nhardware_id.txt has been created next to this EXE.\nSend that file (or the ID above) to get your license key.\nPlace license.key in the same folder as this EXE."
+        msg = "Your hardware ID: " + hw_id + "\n\nhardware_id.txt has been saved to:\n" + str(hw_file) + "\n\nSend that file (or the ID above) to get your license key."
         _show_info("LICENSE REQUIRED", msg)
         return 1
 
@@ -224,10 +250,11 @@ def main():
         err_str = str(e)
         if 'hardware ID:' in err_str:
             hw_id = err_str.split('hardware ID:')[-1].strip()
-            hw_file = Path(sys.executable).parent / 'hardware_id.txt'
+            write_dir = _get_write_dir()
+            hw_file = write_dir / 'hardware_id.txt'
             with open(hw_file, 'w') as f:
                 f.write(hw_id)
-            err_str += '\n\nhardware_id.txt has been created. Send this file to get a new license.'
+            err_str += '\n\nhardware_id.txt saved to:\n' + str(hw_file) + '\nSend this file to get a new license.'
         _show_error("License Error", err_str)
         return 1
 
