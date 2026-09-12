@@ -500,7 +500,7 @@ def _run_gui(payloads):
     import tkinter as tk
     from tkinter import messagebox
 
-    # Classic Win9x palette - real native widgets this time
+    # Classic Win9x palette - real native widgets
     BG = '#c0c0c0'         # classic silver
     GOLD = '#c9a53a'
     GOLD_DARK = '#a8842c'
@@ -513,7 +513,6 @@ def _run_gui(payloads):
     app.resizable(False, False)
     app.configure(bg=BG)
 
-    F_TITLE = ('Tahoma', 22, 'bold')
     F_GROUP = ('Tahoma', 10, 'bold')
     F_BODY = ('Tahoma', 10)
     F_BTN = ('Tahoma', 10, 'bold')
@@ -521,7 +520,8 @@ def _run_gui(payloads):
 
     selected = set()
 
-    tk.Label(app, text='Orbital', font=('Tahoma', 26, 'bold'), fg=BLACK, bg=BG).pack(pady=(6, 2))
+    tk.Label(app, text='Orbital', font=('Tahoma', 26, 'bold'), fg=BLACK,
+             bg=BG).pack(pady=(6, 2))
 
     # Programs group box - LabelFrame naturally draws its label sitting
     # in the border line, exactly like the reference menus.
@@ -552,6 +552,7 @@ def _run_gui(payloads):
             pass
 
     def make_row(name):
+        # Sunken bevel so every EXE sits in its own 3D slot
         row = tk.Frame(inner, bg=BG, bd=1, relief='sunken')
         row.pack(fill='x', padx=6, pady=3)
         var = tk.BooleanVar(value=(name in selected))
@@ -566,7 +567,7 @@ def _run_gui(payloads):
         cb = tk.Checkbutton(row, text=name, variable=var, command=on_toggle,
                             font=F_BODY, bg=BG, fg=BLACK, activebackground=BG,
                             activeforeground=BLACK, anchor='w')
-        cb.pack(side='left', fill='x', expand=True)
+        cb.pack(side='left', fill='x', expand=True, padx=4, pady=2)
 
         def on_run_one(n=name):
             start_run([n])
@@ -626,10 +627,10 @@ def _run_gui(payloads):
                       relief='sunken', bd=2, anchor='w')
     status.pack(fill='x', padx=10, pady=(0, 10))
 
-    # Watermark (top-right, next to the title). Loads watermark.png from the
-    # exe folder, script folder, cwd, or the bundled _MEIPASS. tk.PhotoImage
-    # handles PNG (and GIF) natively - a JPEG renamed to .png will NOT load,
-    # and the reason gets recorded in debug.txt.
+    # Watermark (top-right corner). Loads watermark.png from the exe folder,
+    # script folder, cwd, or the bundled _MEIPASS. tk.PhotoImage handles PNG
+    # natively - a JPEG renamed to .png will NOT load, and the reason gets
+    # recorded in debug.txt.
     wm_path = None
     for base in _search_paths:
         if base and (base / 'watermark.png').exists():
