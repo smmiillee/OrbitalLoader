@@ -55,40 +55,45 @@ jobs:
 
       - name: Build customer EXE launcher
         run: |
-          pyinstaller --onefile --noconsole protected/loader.py -n SecureLauncher
+          pyinstaller --onefile --windowed --add-data "protected/license.key;." --add-data "protected/payload.enc;." --add-data "protected/payload.meta;." protected/loader.py -n SecureLauncher
 
-      - name: Install 7-Zip
+      - name: Install NSIS
         run: |
-          choco install 7zip -y
+          choco install nsis -y
 
-      - name: Create SFX single-file package
+      - name: Create silent installer
         shell: pwsh
         run: |
-          # Create temp folder with all files
-          New-Item -ItemType Directory -Force -Path ./sfx-contents
-          Copy-Item ./dist/SecureLauncher.exe ./sfx-contents/
-          Copy-Item ./protected/license.key ./sfx-contents/
-          Copy-Item ./protected/payload.enc ./sfx-contents/
-          Copy-Item ./protected/payload.meta ./sfx-contents/
+          $nsisScript = @"
+          !include "MUI2.nsh"
+          Name "Secure Launcher"
+          OutFile "${{ github.event.inputs.customer_id }}-Launcher.exe"
+          RequestExecutionLevel user
+          SetCompressor lzma
           
-          # Find 7z and SFX module
-          $7zPath = (Get-Command 7z -ErrorAction SilentlyContinue).Source
-          if (-not $7zPath) { $7zPath = "C:\Program Files\7-Zip\7z.exe" }
-          if (-not (Test-Path $7zPath)) { $7zPath = "C:\ProgramData\chocolatey\bin\7z.exe" }
+          ; Silent install - no UI
+          SilentInstall silent
           
-          $sfxPath = Join-Path (Split-Path $7zPath) "7z.sfx"
-          if (-not (Test-Path $sfxPath)) { $sfxPath = "C:\Program Files\7-Zip\7z.sfx" }
-          if (-not (Test-Path $sfxPath)) { $sfxPath = "C:\ProgramData\chocolatey\lib\7zip\tools\7z.sfx" }
+          Section
+            ; Create temp dir
+            InitPluginsDir
+            SetOutPath `$PLUGINSDIR
+            
+            ; Extract files
+            File "dist\SecureLauncher.exe"
+            File "protected\license.key"
+            File "protected\payload.enc"
+            File "protected\payload.meta"
+            
+            ; Run launcher
+            ExecWait `"SecureLauncher.exe"`
+            
+            ; Cleanup happens automatically on exit
+          SectionEnd
+          "@
           
-          Write-Output "7z: $7zPath"
-          Write-Output "SFX: $sfxPath"
-          
-          # Create 7z archive then convert to SFX
-          & $7zPath a -r ./archive.7z ./sfx-contents/*
-          & $7zPath a -sfx"$sfxPath" ./SecureLauncher-SFX.exe ./archive.7z
-          
-          # Rename to customer-friendly name
-          Rename-Item ./SecureLauncher-SFX.exe "./${{ github.event.inputs.customer_id }}-Launcher.exe"
+          $nsisScript | Out-File -Encoding ASCII ./installer.nsi
+          & "C:\Program Files (x86)\NSIS\makensis.exe" /V2 ./installer.nsi
 
       - name: Upload single-file package
         uses: actions/upload-artifact@v4
@@ -102,6 +107,6 @@ jobs:
         run: |
           Write-Output "## Build Complete" >> $env:GITHUB_STEP_SUMMARY
           Write-Output "- Customer: ${{ github.event.inputs.customer_id }}" >> $env:GITHUB_STEP_SUMMARY
-          Write-Output "- Single file: ${{ github.event.inputs.customer_id }}-Launcher.exe" >> $env:GITHUB_STEP_SUMMARY
+          Write-Output "- Single silent EXE: ${{ github.event.inputs.customer_id }}-Launcher.exe" >> $env:GITHUB_STEP_SUMMARY
           Write-Output "" >> $env:GITHUB_STEP_SUMMARY
-          Write-Output "Customer double-clicks one EXE, it self-extracts and runs." >> $env:GITHUB_STEP_SUMMARY
+          Write-Output "Customer double-clicks one EXE. No visible extraction. App runs directly." >> $env:GITHUB_STEP_SUMMARY
