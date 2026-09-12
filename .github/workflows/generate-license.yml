@@ -37,45 +37,47 @@ jobs:
           echo "Input HWID: '${{ github.event.inputs.hardware_id }}'"
           echo "Stripped HWID: '$HWID'"
           
+          # Run and save to file
           python -m build_tools.builder generate-license \
             --customer "${{ github.event.inputs.customer_id }}" \
             --days ${{ github.event.inputs.expiry_days }} \
             --hardware-id "$HWID" \
-            > raw_output.txt 2>&1
+            > raw_output.txt
           
           echo "=== Full output ==="
           cat raw_output.txt
           
-          LICENSE_KEY=$(grep -v '^DEBUG:' raw_output.txt | grep -v '^$' | tail -n 1)
-          echo "=== Extracted key (first 50 chars): ${LICENSE_KEY:0:50}"
+          # Extract license key - line starting with "License key for"
+          LICENSE_KEY=$(grep "^License key for" raw_output.txt | sed 's/License key for.*://' | xargs)
+          echo "=== Extracted key length: ${#LICENSE_KEY}"
           
-          echo "$LICENSE_KEY" > license.key
+          # Save clean key
+          echo -n "$LICENSE_KEY" > license.key
           
-          python3 << PYEOF
+          # Verify
+          python3 << 'PYEOF'
           import base64, zlib, json
           with open('license.key', 'r') as f:
               key = f.read().strip()
+          print(f"Key length: {len(key)}")
           padding = 4 - (len(key) % 4)
           if padding != 4:
               key += '=' * padding
           compressed = base64.urlsafe_b64decode(key)
           data = json.loads(zlib.decompress(compressed))
-          print('VERIFICATION:')
-          print('  Customer:', data['data'].get('customer_id'))
-          print('  License HW:', data['data'].get('hardware_fingerprint'))
-          print('  Expected HW:', '$HWID')
-          print('  MATCH:', data['data'].get('hardware_fingerprint') == '$HWID')
+          print(f"Customer: {data['data'].get('customer_id')}")
+          print(f"License HW: {data['data'].get('hardware_fingerprint')}")
+          print(f"Expected HW: '$HWID'")
+          print(f"MATCH: {data['data'].get('hardware_fingerprint') == '$HWID'}")
           PYEOF
 
-      - name: Create license file artifact
+      - name: Create artifact
         run: |
           mkdir -p license_output
           cp license.key license_output/
           echo "Customer: ${{ github.event.inputs.customer_id }}" > license_output/README.txt
           echo "Hardware: ${{ github.event.inputs.hardware_id }}" >> license_output/README.txt
           echo "Expiry: ${{ github.event.inputs.expiry_days }} days" >> license_output/README.txt
-          echo "" >> license_output/README.txt
-          echo "Place license.key next to the launcher EXE." >> license_output/README.txt
 
       - name: Upload license
         uses: actions/upload-artifact@v4
@@ -83,12 +85,3 @@ jobs:
           name: license-${{ github.event.inputs.customer_id }}
           path: license_output/
           retention-days: 30
-
-      - name: Summary
-        run: |
-          echo "## License Generated" >> $GITHUB_STEP_SUMMARY
-          echo "- Customer: ${{ github.event.inputs.customer_id }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Hardware: ${{ github.event.inputs.hardware_id }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Expiry: ${{ github.event.inputs.expiry_days }} days" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Download artifact: \`license-${{ github.event.inputs.customer_id }}\`" >> $GITHUB_STEP_SUMMARY
