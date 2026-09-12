@@ -95,9 +95,9 @@ def _write_debug(content):
 LICENSE_KEY = None
 license_sources = []
 search_paths = [
-    Path.cwd(),  # Where user launched from (most likely)
-    Path(sys.executable).parent,  # EXE location
-    Path.home() / 'Desktop',  # Desktop
+    Path.cwd(),
+    Path(sys.executable).parent,
+    Path.home() / 'Desktop',
     Path(__file__).parent if '__file__' in dir() else None,
     Path(sys._MEIPASS) if hasattr(sys, '_MEIPASS') else None,
 ]
@@ -171,7 +171,7 @@ def _derive_keys(master):
 def validate_license(license_key, license_secret):
     debug_info = []
     debug_info.append(f"Key length: {len(license_key)}")
-    debug_info.append(f"Key first 20 chars: {license_key[:20]}")
+    debug_info.append(f"Key first 20: {license_key[:20]}")
     
     if not license_key:
         raise ValueError("No license provided")
@@ -366,10 +366,19 @@ def main():
         compressed = base64.urlsafe_b64decode(lic['license_key'] + ('=' * padding if padding != 4 else ''))
         lic_json = zlib.decompress(compressed)
         lic_data = json.loads(lic_json)
+        
+        print(f"DEBUG: Original HW: {lic_data['data'].get('hardware_fingerprint')}")
+        print(f"DEBUG: Target HW: {args.hardware_id}")
+        
         lic_data['data']['hardware_fingerprint'] = args.hardware_id
+        
         payload = json.dumps(lic_data['data'], sort_keys=True).encode()
         import hmac, hashlib
         lic_data['signature'] = hmac.new(derive_license_secret(orch._master), payload, hashlib.sha256).hexdigest()
+        
+        print(f"DEBUG: New HW in data: {lic_data['data'].get('hardware_fingerprint')}")
+        print(f"DEBUG: Signature length: {len(lic_data['signature'])}")
+        
         new_json = json.dumps(lic_data)
         lic_key = base64.urlsafe_b64encode(zlib.compress(new_json.encode())).decode().rstrip('=')
         print(f"License key for {args.customer}:")
