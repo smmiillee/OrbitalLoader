@@ -90,20 +90,13 @@ import zlib
 import hashlib
 import hmac
 
-_SECRET_PIECES = {pieces}
-_SECRET_ORDER = {order}
-
 def _reconstruct_secret():
-    ordered = [_SECRET_PIECES[i] for i in _SECRET_ORDER]
-    cleaned = []
-    for piece in ordered:
-        cleaned.append(''.join(c for i, c in enumerate(piece) if i % 3 != 2))
-    combined = ''.join(cleaned)
-    # Fix base64 padding
-    padding = 4 - (len(combined) % 4)
+    master_b64 = {master_secret_b64}
+    # Fix padding
+    padding = 4 - (len(master_b64) % 4)
     if padding != 4:
-        combined += '=' * padding
-    return base64.b64decode(combined)
+        master_b64 += '=' * padding
+    return base64.b64decode(master_b64)
 
 def _derive_keys(master):
     lic = hmac.new(b'license-v1', master, hashlib.sha256).digest()
@@ -193,20 +186,9 @@ if __name__ == '__main__':
     sys.exit(main())
 '''
 
-        import secrets as sec
-        encoded = base64.b64encode(self._master).decode()
-        chunks = [encoded[i:i+8] for i in range(0, len(encoded), 8)]
-        pieces = []
-        for chunk in chunks:
-            noisy = ''.join(c + sec.choice('0123456789abcdef') for c in chunk)
-            pieces.append(noisy)
-        order = list(range(len(pieces)))
-        sec.SystemRandom().shuffle(order)
-
         loader_code = template.format(
             embedded_license=repr(license_key),
-            pieces=json.dumps(pieces),
-            order=json.dumps(order)
+            master_secret_b64=repr(base64.b64encode(self._master).decode())
         )
 
         loader_path = output_dir / 'loader.py'
