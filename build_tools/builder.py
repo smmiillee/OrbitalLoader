@@ -7,8 +7,6 @@ import sys
 import json
 import base64
 import argparse
-import tempfile
-import subprocess
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -51,7 +49,7 @@ class BuildOrchestrator:
         with open(meta_path, 'w') as f:
             json.dump(meta, f, indent=2)
 
-        self._generate_loader(output_dir)
+        self._generate_loader(output_dir, license_info['license_key'])
 
         return {
             'customer_id': customer_id,
@@ -60,7 +58,7 @@ class BuildOrchestrator:
             'output_dir': str(output_dir),
         }
 
-    def _generate_loader(self, output_dir: Path):
+    def _generate_loader(self, output_dir: Path, license_key: str):
         template = '''#!/usr/bin/env python3
 """
 Secure Loader - Auto-generated
@@ -74,11 +72,16 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+# Embedded license
+EMBEDDED_LICENSE = {embedded_license}
+
 # Load license
 license_path = Path(__file__).parent / 'license.key'
 if license_path.exists():
     with open(license_path) as f:
         LICENSE_KEY = f.read().strip()
+elif EMBEDDED_LICENSE:
+    LICENSE_KEY = EMBEDDED_LICENSE
 else:
     LICENSE_KEY = input("Enter license key: ").strip()
 
@@ -96,6 +99,10 @@ def _reconstruct_secret():
     for piece in ordered:
         cleaned.append(''.join(c for i, c in enumerate(piece) if i % 3 != 2))
     combined = ''.join(cleaned)
+    # Fix base64 padding
+    padding = 4 - (len(combined) % 4)
+    if padding != 4:
+        combined += '=' * padding
     return base64.b64decode(combined)
 
 def _derive_keys(master):
@@ -197,6 +204,7 @@ if __name__ == '__main__':
         sec.SystemRandom().shuffle(order)
 
         loader_code = template.format(
+            embedded_license=repr(license_key),
             pieces=json.dumps(pieces),
             order=json.dumps(order)
         )
