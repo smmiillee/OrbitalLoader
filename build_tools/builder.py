@@ -180,13 +180,11 @@ CLI_ARGS = sys.argv[1:]
 NO_GUI = '--nogui' in CLI_ARGS
 PAYLOAD_ARGS = [a for a in CLI_ARGS if a != '--nogui' and a != '--list' and not a.startswith('--run=')]
 
-
 def _pad_b64(value):
     padding = 4 - (len(value) % 4)
     if padding != 4:
         value += '=' * padding
     return value
-
 
 def _decode_embedded_secret(value):
     if not value:
@@ -195,7 +193,6 @@ def _decode_embedded_secret(value):
         return base64.b64decode(_pad_b64(value.strip()))
     except Exception:
         return None
-
 
 def _get_write_dirs():
     dirs = []
@@ -212,7 +209,6 @@ def _get_write_dirs():
         pass
     return dirs
 
-
 def _write_debug(content):
     # Append-mode with a timestamp header, so each entry survives later runs.
     text = str(content)
@@ -226,7 +222,6 @@ def _write_debug(content):
         except Exception:
             continue
 
-
 def _save_hardware_id(hw_id):
     for base in _get_write_dirs():
         try:
@@ -235,7 +230,6 @@ def _save_hardware_id(hw_id):
                 f.write(hw_id)
         except Exception:
             continue
-
 
 def _get_hardware_fingerprint():
     # MUST stay in sync with loader/license_manager.py
@@ -281,7 +275,6 @@ def _get_hardware_fingerprint():
     combined = '|'.join(str(c) for c in components if c)
     return hashlib.sha256(combined.encode()).hexdigest()[:32]
 
-
 LICENSE_KEY = None
 _license_sources = []
 _search_paths = [
@@ -316,7 +309,6 @@ if not LICENSE_KEY and EMBEDDED_LICENSE:
 if not LICENSE_KEY:
     _license_sources.append('No license found')
 
-
 def _find_payloads():
     # External payload files (exe dir / cwd) override embedded ones (_MEIPASS).
     found = {}
@@ -343,7 +335,6 @@ def _find_payloads():
         except Exception:
             continue
     return found
-
 
 def validate_license(license_key, license_secret):
     debug_lines = []
@@ -391,7 +382,6 @@ def validate_license(license_key, license_secret):
 
     return data
 
-
 def decrypt_payload(enc_path, meta, enc_secret):
     from cryptography.fernet import Fernet
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -413,13 +403,11 @@ def decrypt_payload(enc_path, meta, enc_secret):
         raise ValueError('Payload integrity check failed')
     return original
 
-
 def _secure_write(path, data):
     with open(path, 'wb') as f:
         f.write(data)
     if sys.platform != 'win32':
         os.chmod(path, stat.S_IRWXU)
-
 
 def execute_exe(data, suffix='.exe'):
     fd, path = tempfile.mkstemp(suffix=suffix)
@@ -434,12 +422,10 @@ def execute_exe(data, suffix='.exe'):
         except Exception:
             pass
 
-
 def _payload_suffix(meta, name):
     orig = meta.get('original_name') or (name + '.exe')
     suffix = Path(orig).suffix
     return suffix if suffix else '.exe'
-
 
 def _run_one(payloads, name):
     enc_path, meta_path = payloads[name]
@@ -451,7 +437,6 @@ def _run_one(payloads, name):
     data = decrypt_payload(enc_path, meta, enc_secret)
     return execute_exe(data, _payload_suffix(meta, name))
 
-
 def _show_error(title, message):
     if sys.platform == 'win32':
         try:
@@ -462,7 +447,6 @@ def _show_error(title, message):
     else:
         print(title + ': ' + message, file=sys.stderr)
 
-
 def _show_info(title, message):
     if sys.platform == 'win32':
         try:
@@ -472,7 +456,6 @@ def _show_info(title, message):
             pass
     else:
         print(title + ': ' + message)
-
 
 def _launch_in_thread(payloads, names, set_status, buttons, on_finished=None):
     def worker():
@@ -500,7 +483,6 @@ def _launch_in_thread(payloads, names, set_status, buttons, on_finished=None):
     t = threading.Thread(target=worker, daemon=False)
     t.start()
 
-
 def _run_gui(payloads):
     import tkinter as tk
     from tkinter import messagebox, font as tkfont
@@ -518,7 +500,6 @@ def _run_gui(payloads):
     SHADOW = '#808080'      # dark bevel edge
     LIGHT = '#ffffff'       # light bevel edge
     NAVY = '#000080'        # title bar / banner blue
-    BANNER = '#000080'
     WHITE = '#ffffff'       # sunken field fill
     BLACK = '#000000'
     GREEN = '#008000'       # status dot green
@@ -529,7 +510,6 @@ def _run_gui(payloads):
     app.resizable(False, False)
     app.configure(bg=BG)
 
-    # Pick the chunkiest available display face for the logo lockup.
     families = set(tkfont.families(app))
 
     def pick(*names):
@@ -549,25 +529,29 @@ def _run_gui(payloads):
     state = {'busy': False}
     closed = {'flag': False}
 
-    def bevel(parent, relief='raised', thickness=2, **kw):
-        return tk.Frame(parent, bg=BG, bd=thickness, relief=relief, **kw)
-
     # ---- custom title bar ------------------------------------------------
+    drag = {'x': 0, 'y': 0}
+
     def on_press(event):
         drag['x'] = event.x
         drag['y'] = event.y
 
     def on_drag(event):
-        x = app.winfo_x() + (event.x - drag['x'])
-        y = app.winfo_y() + (event.y - drag['y'])
-        app.geometry('+%d+%d' % (x, y))
+        app.geometry('+%d+%d' % (app.winfo_x() + (event.x - drag['x']),
+                                 app.winfo_y() + (event.y - drag['y'])))
 
-    drag = {'x': 0, 'y': 0}
+    def close_window():
+        if closed['flag']:
+            return
+        closed['flag'] = True
+        try:
+            app.destroy()
+        except Exception:
+            pass
 
     if CHROME == 'retro':
         app.overrideredirect(True)
 
-    # Outer 3D window border, always present
     shell = tk.Frame(app, bg=BG, bd=2, relief='raised')
     shell.pack(fill='both', expand=True)
 
@@ -576,7 +560,6 @@ def _run_gui(payloads):
         tbar.pack(fill='x', side='top')
         tbar.pack_propagate(False)
 
-        # tiny planet glyph in the title bar
         ticon = tk.Canvas(tbar, width=16, height=16, bg=NAVY, bd=0,
                           highlightthickness=0)
         ticon.create_oval(2, 4, 12, 14, outline=LIGHT, fill=LIGHT)
@@ -588,17 +571,8 @@ def _run_gui(payloads):
                           anchor='w')
         tlabel.pack(side='left', fill='x', expand=True)
 
-        def close_window():
-            if closed['flag']:
-                return
-            closed['flag'] = True
-            try:
-                app.destroy()
-            except Exception:
-                pass
-
         def tiny_btn(glyph, cmd):
-            return tk.Button(tbar, text=glyph, command=cmd, font=('Marlett', 7),
+            return tk.Button(tbar, text=glyph, command=cmd, font=(F_STATUS[0], 7),
                              bg=BG, fg=BLACK, bd=1, relief='raised',
                              width=2, padx=0, pady=0,
                              activebackground=BTN_ACTIVE)
@@ -619,7 +593,6 @@ def _run_gui(payloads):
 
     logo_canvas = tk.Canvas(header, width=78, height=58, bg=BG, bd=0,
                             highlightthickness=0)
-    # ringed planet, black on silver, like the reference mark
     logo_canvas.create_oval(6, 8, 66, 48, outline=BLACK, width=4)
     logo_canvas.create_oval(14, 22, 62, 36, outline=BLACK, width=3)
     logo_canvas.create_oval(30, 16, 54, 40, fill=BLACK, outline=BLACK)
@@ -653,8 +626,8 @@ def _run_gui(payloads):
     group = tk.Frame(body, bg=BG, bd=2, relief='groove')
     group.pack(fill='both', expand=True, padx=13, pady=(6, 4))
 
-    gtitle = tk.Label(group, text=' PROGRAMS ', font=F_GROUP, fg=BLACK, bg=BG)
-    gtitle.pack(anchor='w', padx=6)
+    tk.Label(group, text=' PROGRAMS ', font=F_GROUP, fg=BLACK, bg=BG).pack(
+        anchor='w', padx=6)
 
     canvas = tk.Canvas(group, bg=BG, highlightthickness=0, bd=0)
     vbar = tk.Scrollbar(group, orient='vertical', command=canvas.yview,
@@ -683,19 +656,18 @@ def _run_gui(payloads):
 
     # ---- chunky segmented busy bar --------------------------------------
     BAR_SEGS = 34
+    marquee = {'pos': 0}
+
     bar = tk.Canvas(body, height=16, bg=WHITE, bd=2, relief='sunken',
                     highlightthickness=0)
     bar.pack(fill='x', padx=13, pady=(0, 4))
-    bar.bind('<Configure>', lambda e: draw_bar())
 
     def draw_bar():
         bar.delete('all')
         w = max(bar.winfo_width(), 60)
         seg_w = max((w - 6) / BAR_SEGS, 3)
-        lit = 0
         if state['busy']:
-            lit = 8
-            for i in range(lit):
+            for i in range(8):
                 x0 = 3 + ((marquee['pos'] + i) % BAR_SEGS) * seg_w
                 bar.create_rectangle(x0, 3, x0 + seg_w - 3, 13,
                                      fill=NAVY, outline=NAVY)
@@ -703,7 +675,7 @@ def _run_gui(payloads):
             bar.create_text(6, 8, anchor='w', text='IDLE',
                             font=(F_STATUS[0], 8), fill=SHADOW)
 
-    marquee = {'pos': 0}
+    bar.bind('<Configure>', lambda e: draw_bar())
 
     def tick():
         if closed['flag']:
@@ -718,7 +690,6 @@ def _run_gui(payloads):
 
     # ---- rows: one beveled pane per EXE ---------------------------------
     def make_row(name):
-        # Outer raised pane so every EXE sits in its own 3D slot
         row = tk.Frame(inner, bg=BG, bd=2, relief='raised')
         row.pack(fill='x', padx=5, pady=3)
 
@@ -828,7 +799,7 @@ def _run_gui(payloads):
                       fg=BLACK, relief='sunken', bd=2, anchor='w')
     status.pack(fill='x', padx=13, pady=(0, 10))
 
-    # ---- watermark (unchanged) ------------------------------------------
+    # ---- watermark (very faint, top-right corner) ------------------------
     wm_path = None
     for base in _search_paths:
         if base and (base / 'watermark.png').exists():
@@ -837,13 +808,14 @@ def _run_gui(payloads):
     if wm_path:
         try:
             wm = tk.PhotoImage(file=str(wm_path))
-            # Keep it small - tucked in the corner
-            if wm.width() > 120:
-                factor = max(1, wm.width() // 120)
+            # Keep it very, very small - a faint corner stamp.
+            WM_MAX_W = 44
+            if wm.width() > WM_MAX_W:
+                factor = max(1, wm.width() // WM_MAX_W)
                 wm = wm.subsample(factor, factor)
-            # tk can't do per-pixel alpha, so simulate 40% opacity by
+            # tk can't do per-pixel alpha, so simulate low opacity by
             # blending every pixel toward the window background color.
-            WMR = 0.4                # watermark opacity (0.0 invisible - 1.0 full)
+            WMR = 0.12               # watermark opacity (0.0 invisible - 1.0 full)
             BG_RGB = (192, 192, 192)  # must match BG (#c0c0c0)
             w_px, h_px = wm.width(), wm.height()
             faded = tk.PhotoImage(master=app, width=w_px, height=h_px)
@@ -871,7 +843,7 @@ def _run_gui(payloads):
             wm_label = tk.Label(body, image=wm, bg=BG, bd=0,
                                 highlightthickness=0)
             wm_label.image = wm  # keep a reference so it is not garbage-collected
-            wm_label.place(relx=1.0, rely=0.0, x=-18, y=8, anchor='ne')
+            wm_label.place(relx=1.0, rely=0.0, x=-8, y=6, anchor='ne')
             _write_debug('Watermark: loaded from ' + str(wm_path) +
                          ' (' + str(wm.width()) + 'x' + str(wm.height()) +
                          ', faded to ' + str(int(WMR * 100)) + '%)')
@@ -881,16 +853,7 @@ def _run_gui(payloads):
     else:
         _write_debug('Watermark: watermark.png not found next to the launcher or in the bundle')
 
-    def on_close():
-        if closed['flag']:
-            return
-        closed['flag'] = True
-        try:
-            app.destroy()
-        except Exception:
-            pass
-
-    app.protocol('WM_DELETE_WINDOW', on_close)
+    app.protocol('WM_DELETE_WINDOW', close_window)
 
     refresh()
     # Size the window to its content, then centre it.
@@ -903,6 +866,120 @@ def _run_gui(payloads):
 
     app.after(90, tick)
     app.mainloop()
+
+def _run_cli(payloads):
+    names = sorted(payloads)
+    while True:
+        print()
+        print('Available programs:')
+        for i, name in enumerate(names, 1):
+            print('  [' + str(i) + '] ' + name)
+        try:
+            choice = input('Number to run, "all", or Enter to quit: ').strip()
+        except EOFError:
+            return 0
+        if not choice:
+            return 0
+        if choice.lower() == 'all':
+            targets = list(names)
+        else:
+            try:
+                idx = int(choice)
+            except ValueError:
+                print('Invalid input.')
+                continue
+            if idx < 1 or idx > len(names):
+                print('Invalid number.')
+                continue
+            targets = [names[idx - 1]]
+        for name in targets:
+            try:
+                code = _run_one(payloads, name)
+                print('[*] ' + name + ' exited with code ' + str(code))
+            except Exception as e:
+                print('[!] ' + name + ' failed: ' + str(e))
+
+def main():
+    _write_debug('License sources:\n' + '\n'.join(_license_sources))
+
+    if not LICENSE_KEY:
+        hw_id = _get_hardware_fingerprint()
+        _save_hardware_id(hw_id)
+        msg = (
+            'No license found.\n\n'
+            'Your HWID: ' + hw_id + '\n\n'
+            'hardware_id.txt has been saved next to this program and on your Desktop.\n'
+            'Send that file to the vendor to receive your license key.\n\n'
+            'When you receive license.key, place it in the same folder as this\n'
+            'program and run it again.'
+        )
+        _show_info('LICENSE REQUIRED', msg)
+        return 1
+
+    try:
+        license_secret = _decode_embedded_secret(EMBEDDED_LICENSE_SECRET_B64)
+        if license_secret is None:
+            raise ValueError('Loader build error: license secret missing')
+        license_data = validate_license(LICENSE_KEY, license_secret)
+    except ValueError as e:
+        err_str = str(e)
+        if 'Your HWID:' in err_str:
+            hw_id = err_str.split('Your HWID:')[-1].strip()
+            _save_hardware_id(hw_id)
+            err_str += (
+                '\n\nhardware_id.txt has been saved next to this program and on your Desktop.\n'
+                'Send that file to the vendor to receive a new license key.'
+            )
+        _show_error('License Error', err_str)
+        return 1
+    except Exception:
+        _write_debug('Unexpected error:\n' + traceback.format_exc())
+        _show_error('Error', 'Unexpected error - see debug.txt')
+        return 1
+
+    try:
+        payloads = _find_payloads()
+        if not payloads:
+            raise ValueError('No encrypted payloads found (payload_*.enc / payload_*.meta missing).')
+
+        if '--list' in CLI_ARGS:
+            for name in sorted(payloads):
+                print(name)
+            return 0
+
+        run_names = [a.split('=', 1)[1] for a in CLI_ARGS if a.startswith('--run=')]
+        if run_names:
+            for name in run_names:
+                if name not in payloads:
+                    raise ValueError('Unknown program: ' + name)
+            for name in run_names:
+                code = _run_one(payloads, name)
+                print('[*] ' + name + ' exited with code ' + str(code))
+            return 0
+
+        if NO_GUI:
+            return _run_cli(payloads)
+
+        try:
+            _run_gui(payloads)
+            return 0
+        except ImportError:
+            # GUI unavailable - fall back to the text menu
+            return _run_cli(payloads)
+        except ValueError as e:
+            _show_error('Error', str(e))
+            return 1
+        except Exception:
+            _write_debug('Execution error:\n' + traceback.format_exc())
+            _show_error('Error', 'Unexpected error - see debug.txt')
+            return 1
+    except Exception:
+        _write_debug('Unexpected error:\n' + traceback.format_exc())
+        _show_error('Error', 'Unexpected error - see debug.txt')
+        return 1
+
+if __name__ == '__main__':
+    sys.exit(main())
 '''
 
         loader_source = (
