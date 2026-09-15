@@ -41,7 +41,7 @@ class BuildOrchestrator:
                 "[!] Refusing to build: embedding a hardware-bound license but no "
                 "--hardware-id was supplied. The license would bind to this build\n"
                 "    machine instead of the user's PC.\n"
-                "    Pass --hardware-id <user HWID>, --no-hardware, or "
+                "    Pass --hardware-id, --no-hardware, or "
                 "--no-embed-license."
             )
 
@@ -130,7 +130,7 @@ class BuildOrchestrator:
             raise SystemExit(
                 "[!] Refusing to generate a hardware-bound license without "
                 "--hardware-id (it would bind to this machine instead of the "
-                "user's PC). Pass --hardware-id <user HWID> or --no-hardware."
+                "user's PC). Pass --hardware-id or --no-hardware."
             )
         return self._license_mgr.generate_license(
             customer_id=customer_id,
@@ -264,19 +264,19 @@ def _get_hardware_fingerprint():
                 break
             except Exception:
                 continue
-        if sys.platform == 'darwin':
-            try:
-                import subprocess
-                result = subprocess.run(
-                    ['ioreg', '-rd1', '-c', 'IOPlatformExpertDevice'],
-                    capture_output=True, text=True, timeout=5,
-                )
-                for line in result.stdout.splitlines():
-                    if 'IOPlatformUUID' in line:
-                        components.append(line.split('"')[-2])
-                        break
-            except Exception:
-                pass
+    if sys.platform == 'darwin':
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['ioreg', '-rd1', '-c', 'IOPlatformExpertDevice'],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                if 'IOPlatformUUID' in line:
+                    components.append(line.split('"')[-2])
+                    break
+        except Exception:
+            pass
     components.append(sys.platform)
     combined = '|'.join(str(c) for c in components if c)
     return hashlib.sha256(combined.encode()).hexdigest()[:32]
@@ -474,7 +474,7 @@ def _show_info(title, message):
         print(title + ': ' + message)
 
 
-def _launch_in_thread(payloads, names, set_status, buttons):
+def _launch_in_thread(payloads, names, set_status, buttons, on_finished=None):
     def worker():
         for name in names:
             try:
@@ -488,6 +488,11 @@ def _launch_in_thread(payloads, names, set_status, buttons):
                 btn.configure(state='normal')
             except Exception:
                 pass
+        if on_finished is not None:
+            try:
+                on_finished()
+            except Exception:
+                pass
     # Non-daemon: if the user closes the window while a program is still
     # running, the process lingers invisibly until the program exits, so the
     # PyInstaller onefile bootloader can delete its _MEIxxx temp folder
@@ -498,39 +503,162 @@ def _launch_in_thread(payloads, names, set_status, buttons):
 
 def _run_gui(payloads):
     import tkinter as tk
-    from tkinter import messagebox
+    from tkinter import messagebox, font as tkfont
 
-    # Classic Win9x palette - real native widgets
-    BG = '#c0c0c0'         # classic silver
-    GOLD = '#c9a53a'
-    GOLD_DARK = '#a8842c'
+    # ------------------------------------------------------------------
+    # RETRO THEME - Windows 95 / 98 control panel look.
+    #
+    # CHROME picks the window frame:
+    #   'retro'  -> fake Win9x title bar (navy bar, [_] [X]), borderless
+    #   'native' -> whatever frame your OS gives you
+    # ------------------------------------------------------------------
+    CHROME = 'retro'
+
+    BG = '#c0c0c0'          # classic silver
+    SHADOW = '#808080'      # dark bevel edge
+    LIGHT = '#ffffff'       # light bevel edge
+    NAVY = '#000080'        # title bar / banner blue
+    BANNER = '#000080'
+    WHITE = '#ffffff'       # sunken field fill
     BLACK = '#000000'
-    WHITE = '#ffffff'
+    GREEN = '#008000'       # status dot green
+    BTN_ACTIVE = '#d8d8d8'
 
     app = tk.Tk()
-    app.title('Orbital')
-    app.geometry('620x540')
+    app.title('Orbital License Authenticator')
     app.resizable(False, False)
     app.configure(bg=BG)
 
-    F_GROUP = ('Tahoma', 10, 'bold')
-    F_BODY = ('Tahoma', 10)
-    F_BTN = ('Tahoma', 10, 'bold')
-    F_STATUS = ('Tahoma', 9)
+    # Pick the chunkiest available display face for the logo lockup.
+    families = set(tkfont.families(app))
+
+    def pick(*names):
+        for n in names:
+            if n in families:
+                return n
+        return 'Tahoma'
+
+    F_LOGO = (pick('Arial Black', 'Impact', 'Verdana'), 24, 'bold')
+    F_SUB = (pick('Tahoma', 'MS Sans Serif', 'Verdana'), 10, 'bold')
+    F_GROUP = (pick('Tahoma', 'MS Sans Serif', 'Verdana'), 10, 'bold')
+    F_BODY = (pick('Tahoma', 'MS Sans Serif', 'Verdana'), 10)
+    F_BTN = (pick('Tahoma', 'MS Sans Serif', 'Verdana'), 10, 'bold')
+    F_STATUS = (pick('Tahoma', 'MS Sans Serif', 'Verdana'), 9)
 
     selected = set()
+    state = {'busy': False}
+    closed = {'flag': False}
 
-    tk.Label(app, text='Orbital', font=('Tahoma', 26, 'bold'), fg=BLACK,
-             bg=BG).pack(pady=(6, 2))
+    def bevel(parent, relief='raised', thickness=2, **kw):
+        return tk.Frame(parent, bg=BG, bd=thickness, relief=relief, **kw)
 
-    # Programs group box - LabelFrame naturally draws its label sitting
-    # in the border line, exactly like the reference menus.
-    group = tk.LabelFrame(app, text='Programs -', font=F_GROUP, fg=BLACK, bg=BG,
-                          bd=0, highlightthickness=2, highlightbackground=GOLD_DARK)
-    group.pack(fill='both', expand=True, padx=14, pady=(10, 6))
+    # ---- custom title bar ------------------------------------------------
+    def on_press(event):
+        drag['x'] = event.x
+        drag['y'] = event.y
+
+    def on_drag(event):
+        x = app.winfo_x() + (event.x - drag['x'])
+        y = app.winfo_y() + (event.y - drag['y'])
+        app.geometry('+%d+%d' % (x, y))
+
+    drag = {'x': 0, 'y': 0}
+
+    if CHROME == 'retro':
+        app.overrideredirect(True)
+
+    # Outer 3D window border, always present
+    shell = tk.Frame(app, bg=BG, bd=2, relief='raised')
+    shell.pack(fill='both', expand=True)
+
+    if CHROME == 'retro':
+        tbar = tk.Frame(shell, bg=NAVY, bd=0, height=22)
+        tbar.pack(fill='x', side='top')
+        tbar.pack_propagate(False)
+
+        # tiny planet glyph in the title bar
+        ticon = tk.Canvas(tbar, width=16, height=16, bg=NAVY, bd=0,
+                          highlightthickness=0)
+        ticon.create_oval(2, 4, 12, 14, outline=LIGHT, fill=LIGHT)
+        ticon.create_line(0, 9, 15, 7, fill=BLACK, width=2)
+        ticon.pack(side='left', padx=(4, 2), pady=3)
+
+        tlabel = tk.Label(tbar, text='Orbital License Authenticator',
+                          font=(F_SUB[0], 10, 'bold'), fg=LIGHT, bg=NAVY,
+                          anchor='w')
+        tlabel.pack(side='left', fill='x', expand=True)
+
+        def close_window():
+            if closed['flag']:
+                return
+            closed['flag'] = True
+            try:
+                app.destroy()
+            except Exception:
+                pass
+
+        def tiny_btn(glyph, cmd):
+            return tk.Button(tbar, text=glyph, command=cmd, font=('Marlett', 7),
+                             bg=BG, fg=BLACK, bd=1, relief='raised',
+                             width=2, padx=0, pady=0,
+                             activebackground=BTN_ACTIVE)
+
+        tiny_btn('\u2013', lambda: None).pack(side='right', padx=(2, 4), pady=3)
+        tiny_btn('\u00d7', close_window).pack(side='right', padx=(0, 2), pady=3)
+
+        for w in (tbar, ticon, tlabel):
+            w.bind('<Button-1>', on_press)
+            w.bind('<B1-Motion>', on_drag)
+
+    body = tk.Frame(shell, bg=BG)
+    body.pack(fill='both', expand=True, padx=0, pady=0)
+
+    # ---- logo header -----------------------------------------------------
+    header = tk.Frame(body, bg=BG)
+    header.pack(fill='x', padx=12, pady=(8, 4))
+
+    logo_canvas = tk.Canvas(header, width=78, height=58, bg=BG, bd=0,
+                            highlightthickness=0)
+    # ringed planet, black on silver, like the reference mark
+    logo_canvas.create_oval(6, 8, 66, 48, outline=BLACK, width=4)
+    logo_canvas.create_oval(14, 22, 62, 36, outline=BLACK, width=3)
+    logo_canvas.create_oval(30, 16, 54, 40, fill=BLACK, outline=BLACK)
+    logo_canvas.create_arc(2, 26, 74, 40, start=200, extent=140, style='arc',
+                           outline=BG, width=5)
+    logo_canvas.create_arc(2, 26, 74, 40, start=10, extent=60, style='arc',
+                           outline=BLACK, width=3)
+    logo_canvas.pack(side='left', padx=(0, 8))
+
+    title_box = tk.Frame(header, bg=BG)
+    title_box.pack(side='left', fill='x', expand=True)
+
+    tk.Label(title_box, text='ORBITAL', font=F_LOGO, fg=BLACK, bg=BG,
+             anchor='w').pack(anchor='w')
+    tk.Label(title_box, text='LICENSE AUTHENTICATOR v1.0', font=F_SUB,
+             fg=BLACK, bg=BG, anchor='w').pack(anchor='w')
+
+    # ---- dynamic banner (chevron strip) ---------------------------------
+    banner_shadow = tk.Frame(body, bg=SHADOW)
+    banner_shadow.pack(fill='x', padx=13, pady=(6, 0))
+    banner = tk.Frame(banner_shadow, bg=BG, bd=1, relief='raised')
+    banner.pack(fill='x', padx=1, pady=1)
+
+    banner_var = tk.StringVar(value='LOADING PROGRAM LIST...')
+    tk.Label(banner, text='\u00bb', font=(F_SUB[0], 11, 'bold'), fg=BLACK,
+             bg=BG).pack(side='left', padx=(5, 2), pady=2)
+    tk.Label(banner, textvariable=banner_var, font=F_GROUP, fg=BLACK, bg=BG,
+             anchor='w').pack(side='left', fill='x', expand=True, pady=2)
+
+    # ---- programs group box ---------------------------------------------
+    group = tk.Frame(body, bg=BG, bd=2, relief='groove')
+    group.pack(fill='both', expand=True, padx=13, pady=(6, 4))
+
+    gtitle = tk.Label(group, text=' PROGRAMS ', font=F_GROUP, fg=BLACK, bg=BG)
+    gtitle.pack(anchor='w', padx=6)
 
     canvas = tk.Canvas(group, bg=BG, highlightthickness=0, bd=0)
-    vbar = tk.Scrollbar(group, orient='vertical', command=canvas.yview)
+    vbar = tk.Scrollbar(group, orient='vertical', command=canvas.yview,
+                        bd=2, relief='raised', width=16)
     inner = tk.Frame(canvas, bg=BG)
     inner.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
     canvas.create_window((0, 0), window=inner, anchor='nw')
@@ -540,21 +668,60 @@ def _run_gui(payloads):
         canvas.yview_scroll(int(-event.delta / 120), 'units')
     canvas.bind_all('<MouseWheel>', on_mousewheel)
 
-    vbar.pack(side='right', fill='y')
-    canvas.pack(side='left', fill='both', expand=True, padx=4, pady=4)
+    vbar.pack(side='right', fill='y', padx=(0, 3), pady=3)
+    canvas.pack(side='left', fill='both', expand=True, padx=3, pady=3)
 
     status_var = tk.StringVar()
+    busy_var = tk.StringVar(value='IDLE')
 
     def set_status(text):
         try:
             status_var.set('[ORBITAL v1.0] | PROFILE: [' + CUSTOMER_ID + '] | STATUS: [' + text + ']')
+            banner_var.set(str(text).upper())
         except Exception:
             pass
 
+    # ---- chunky segmented busy bar --------------------------------------
+    BAR_SEGS = 34
+    bar = tk.Canvas(body, height=16, bg=WHITE, bd=2, relief='sunken',
+                    highlightthickness=0)
+    bar.pack(fill='x', padx=13, pady=(0, 4))
+    bar.bind('<Configure>', lambda e: draw_bar())
+
+    def draw_bar():
+        bar.delete('all')
+        w = max(bar.winfo_width(), 60)
+        seg_w = max((w - 6) / BAR_SEGS, 3)
+        lit = 0
+        if state['busy']:
+            lit = 8
+            for i in range(lit):
+                x0 = 3 + ((marquee['pos'] + i) % BAR_SEGS) * seg_w
+                bar.create_rectangle(x0, 3, x0 + seg_w - 3, 13,
+                                     fill=NAVY, outline=NAVY)
+        else:
+            bar.create_text(6, 8, anchor='w', text='IDLE',
+                            font=(F_STATUS[0], 8), fill=SHADOW)
+
+    marquee = {'pos': 0}
+
+    def tick():
+        if closed['flag']:
+            return
+        if state['busy']:
+            marquee['pos'] = (marquee['pos'] + 1) % BAR_SEGS
+            draw_bar()
+        elif marquee['pos']:
+            marquee['pos'] = 0
+            draw_bar()
+        app.after(90, tick)
+
+    # ---- rows: one beveled pane per EXE ---------------------------------
     def make_row(name):
-        # Sunken bevel so every EXE sits in its own 3D slot
-        row = tk.Frame(inner, bg=BG, bd=1, relief='sunken')
-        row.pack(fill='x', padx=6, pady=3)
+        # Outer raised pane so every EXE sits in its own 3D slot
+        row = tk.Frame(inner, bg=BG, bd=2, relief='raised')
+        row.pack(fill='x', padx=5, pady=3)
+
         var = tk.BooleanVar(value=(name in selected))
 
         def on_toggle(n=name, v=var):
@@ -566,16 +733,18 @@ def _run_gui(payloads):
 
         cb = tk.Checkbutton(row, text=name, variable=var, command=on_toggle,
                             font=F_BODY, bg=BG, fg=BLACK, activebackground=BG,
-                            activeforeground=BLACK, anchor='w')
-        cb.pack(side='left', fill='x', expand=True, padx=4, pady=2)
+                            activeforeground=BLACK, selectcolor=WHITE,
+                            anchor='w', bd=0, highlightthickness=0)
+        cb.pack(side='left', fill='x', expand=True, padx=6, pady=3)
 
         def on_run_one(n=name):
             start_run([n])
 
-        run1 = tk.Button(row, text='[Run]', font=('Tahoma', 9), bg=BG, fg=BLACK,
-                         relief='raised', bd=2, activebackground='#d8d8d8',
-                         activeforeground=BLACK, width=7, command=on_run_one)
-        run1.pack(side='right', padx=4, pady=1)
+        run1 = tk.Button(row, text='RUN', font=F_BTN, bg=BG, fg=BLACK,
+                         relief='raised', bd=2, activebackground=BTN_ACTIVE,
+                         activeforeground=BLACK, width=6, padx=2, pady=0,
+                         command=on_run_one)
+        run1.pack(side='right', padx=5, pady=3)
 
     def refresh():
         for w in inner.winfo_children():
@@ -583,17 +752,28 @@ def _run_gui(payloads):
         for name in sorted(payloads):
             make_row(name)
         set_status(str(len(payloads)) + ' program(s) loaded')
+        draw_bar()
 
     def start_run(names):
         if not names:
             set_status('Nothing selected')
             return
+        state['busy'] = True
+        busy_var.set('WORKING')
+        draw_bar()
         for btn in (run_sel_btn, run_all_btn, refresh_btn):
             try:
                 btn.configure(state='disabled')
             except Exception:
                 pass
-        _launch_in_thread(payloads, names, set_status, (run_sel_btn, run_all_btn, refresh_btn))
+        _launch_in_thread(payloads, names, set_status,
+                          (run_sel_btn, run_all_btn, refresh_btn),
+                          on_finished=_run_finished)
+
+    def _run_finished():
+        # Called from the worker thread; only flips a flag the UI polls.
+        state['busy'] = False
+        busy_var.set('IDLE')
 
     def on_run_selected():
         start_run(sorted(selected))
@@ -605,32 +785,50 @@ def _run_gui(payloads):
         messagebox.showinfo('About', 'Orbital v1.0\nProfile: ' + CUSTOMER_ID +
                             '\n\nLicensed software launcher.\nDo not redistribute this program.')
 
-    bar = tk.Frame(app, bg=BG)
-    bar.pack(fill='x', padx=14, pady=(0, 6))
+    # ---- control buttons -------------------------------------------------
+    bar_row = tk.Frame(body, bg=BG)
+    bar_row.pack(fill='x', padx=13, pady=(0, 4))
 
     def retro_btn(text, cmd, width):
-        return tk.Button(bar, text=text, command=cmd, width=width, font=F_BTN,
-                         bg=GOLD, fg=BLACK, relief='raised', bd=2,
-                         activebackground=GOLD_DARK, activeforeground=BLACK)
+        return tk.Button(bar_row, text=text, command=cmd, width=width,
+                         font=F_BTN, bg=BG, fg=BLACK, relief='raised', bd=3,
+                         activebackground=BTN_ACTIVE, activeforeground=BLACK,
+                         padx=2, pady=1)
 
-    run_sel_btn = retro_btn('[Run Selected]', on_run_selected, 14)
-    run_sel_btn.pack(side='left', padx=(0, 8))
-    run_all_btn = retro_btn('[Run All]', on_run_all, 11)
-    run_all_btn.pack(side='left', padx=(0, 8))
-    refresh_btn = retro_btn('[Refresh]', refresh, 10)
-    refresh_btn.pack(side='left', padx=(0, 8))
-    about_btn = retro_btn('[About]', on_about, 9)
+    run_sel_btn = retro_btn('RUN SELECTED', on_run_selected, 14)
+    run_sel_btn.pack(side='left', padx=(0, 6))
+    run_all_btn = retro_btn('RUN ALL', on_run_all, 11)
+    run_all_btn.pack(side='left', padx=(0, 6))
+    refresh_btn = retro_btn('REFRESH', refresh, 10)
+    refresh_btn.pack(side='left', padx=(0, 6))
+    about_btn = retro_btn('ABOUT', on_about, 9)
     about_btn.pack(side='right')
 
-    # Sunken white status bar
-    status = tk.Label(app, textvariable=status_var, font=F_STATUS, bg=WHITE, fg=BLACK,
-                      relief='sunken', bd=2, anchor='w')
-    status.pack(fill='x', padx=10, pady=(0, 10))
+    # ---- status pane (license line + progress) ---------------------------
+    pane = tk.Frame(body, bg=BG, bd=2, relief='groove')
+    pane.pack(fill='x', padx=13, pady=(0, 10))
 
-    # Watermark (top-right corner). Loads watermark.png from the exe folder,
-    # script folder, cwd, or the bundled _MEIPASS. tk.PhotoImage handles PNG
-    # natively - a JPEG renamed to .png will NOT load, and the reason gets
-    # recorded in debug.txt.
+    line = tk.Frame(pane, bg=BG)
+    line.pack(fill='x', padx=6, pady=(5, 2))
+
+    tk.Label(line, text='STATUS:', font=F_GROUP, fg=BLACK, bg=BG,
+             anchor='w').pack(side='left')
+    tk.Label(line, text='PROGRESS:', font=F_GROUP, fg=BLACK, bg=BG,
+             anchor='w').pack(side='left', padx=(14, 0))
+
+    dot = tk.Canvas(line, width=10, height=10, bg=BG, bd=0,
+                    highlightthickness=0)
+    dot.create_oval(1, 1, 9, 9, fill=GREEN, outline=SHADOW)
+    dot.pack(side='right', padx=(4, 0))
+    tk.Label(line, text='LICENSE: VALID', font=F_STATUS, fg=GREEN, bg=BG,
+             anchor='e').pack(side='right')
+
+    # Sunken white status bar (unchanged format string)
+    status = tk.Label(body, textvariable=status_var, font=F_STATUS, bg=WHITE,
+                      fg=BLACK, relief='sunken', bd=2, anchor='w')
+    status.pack(fill='x', padx=13, pady=(0, 10))
+
+    # ---- watermark (unchanged) ------------------------------------------
     wm_path = None
     for base in _search_paths:
         if base and (base / 'watermark.png').exists():
@@ -645,23 +843,23 @@ def _run_gui(payloads):
                 wm = wm.subsample(factor, factor)
             # tk can't do per-pixel alpha, so simulate 40% opacity by
             # blending every pixel toward the window background color.
-            WMR = 0.4  # watermark opacity (0.0 invisible - 1.0 full)
+            WMR = 0.4                # watermark opacity (0.0 invisible - 1.0 full)
             BG_RGB = (192, 192, 192)  # must match BG (#c0c0c0)
             w_px, h_px = wm.width(), wm.height()
             faded = tk.PhotoImage(master=app, width=w_px, height=h_px)
             for y in range(h_px):
-                row = []
+                row_px = []
                 for x in range(w_px):
                     try:
                         r, g, b = wm.get(x, y)[:3]
                     except Exception:
                         r, g, b = BG_RGB
-                    row.append('#%02x%02x%02x' % (
+                    row_px.append('#%02x%02x%02x' % (
                         int(r * WMR + BG_RGB[0] * (1 - WMR)),
                         int(g * WMR + BG_RGB[1] * (1 - WMR)),
                         int(b * WMR + BG_RGB[2] * (1 - WMR)),
                     ))
-                faded.put('{' + ' '.join(row) + '}', to=(0, y))
+                faded.put('{' + ' '.join(row_px) + '}', to=(0, y))
             for y in range(h_px):
                 for x in range(w_px):
                     try:
@@ -670,9 +868,10 @@ def _run_gui(payloads):
                     except Exception:
                         pass
             wm = faded
-            wm_label = tk.Label(app, image=wm, bg=BG, bd=0, highlightthickness=0)
+            wm_label = tk.Label(body, image=wm, bg=BG, bd=0,
+                                highlightthickness=0)
             wm_label.image = wm  # keep a reference so it is not garbage-collected
-            wm_label.place(relx=1.0, rely=0.0, x=-6, y=4, anchor='ne')
+            wm_label.place(relx=1.0, rely=0.0, x=-18, y=8, anchor='ne')
             _write_debug('Watermark: loaded from ' + str(wm_path) +
                          ' (' + str(wm.width()) + 'x' + str(wm.height()) +
                          ', faded to ' + str(int(WMR * 100)) + '%)')
@@ -682,121 +881,28 @@ def _run_gui(payloads):
     else:
         _write_debug('Watermark: watermark.png not found next to the launcher or in the bundle')
 
+    def on_close():
+        if closed['flag']:
+            return
+        closed['flag'] = True
+        try:
+            app.destroy()
+        except Exception:
+            pass
+
+    app.protocol('WM_DELETE_WINDOW', on_close)
+
     refresh()
+    # Size the window to its content, then centre it.
+    app.update_idletasks()
+    w = max(app.winfo_reqwidth(), 620)
+    h = max(app.winfo_reqheight(), 560)
+    x = (app.winfo_screenwidth() - w) // 2
+    y = (app.winfo_screenheight() - h) // 3
+    app.geometry('%dx%d+%d+%d' % (w, h, x, y))
+
+    app.after(90, tick)
     app.mainloop()
-
-
-def _run_cli(payloads):
-    names = sorted(payloads)
-    while True:
-        print()
-        print('Available programs:')
-        for i, name in enumerate(names, 1):
-            print('  [' + str(i) + '] ' + name)
-        try:
-            choice = input('Number to run, "all", or Enter to quit: ').strip()
-        except EOFError:
-            return 0
-        if not choice:
-            return 0
-        if choice.lower() == 'all':
-            targets = list(names)
-        else:
-            try:
-                idx = int(choice)
-            except ValueError:
-                print('Invalid input.')
-                continue
-            if idx < 1 or idx > len(names):
-                print('Invalid number.')
-                continue
-            targets = [names[idx - 1]]
-        for name in targets:
-            try:
-                code = _run_one(payloads, name)
-                print('[*] ' + name + ' exited with code ' + str(code))
-            except Exception as e:
-                print('[!] ' + name + ' failed: ' + str(e))
-
-
-def main():
-    _write_debug('License sources:\n' + '\n'.join(_license_sources))
-
-    if not LICENSE_KEY:
-        hw_id = _get_hardware_fingerprint()
-        _save_hardware_id(hw_id)
-        msg = (
-            'No license found.\n\n'
-            'Your HWID: ' + hw_id + '\n\n'
-            'hardware_id.txt has been saved next to this program and on your Desktop.\n'
-            'Send that file to the vendor to receive your license key.\n\n'
-            'When you receive license.key, place it in the same folder as this\n'
-            'program and run it again.'
-        )
-        _show_info('LICENSE REQUIRED', msg)
-        return 1
-
-    try:
-        license_secret = _decode_embedded_secret(EMBEDDED_LICENSE_SECRET_B64)
-        if license_secret is None:
-            raise ValueError('Loader build error: license secret missing')
-        license_data = validate_license(LICENSE_KEY, license_secret)
-    except ValueError as e:
-        err_str = str(e)
-        if 'Your HWID:' in err_str:
-            hw_id = err_str.split('Your HWID:')[-1].strip()
-            _save_hardware_id(hw_id)
-            err_str += (
-                '\n\nhardware_id.txt has been saved next to this program and on your Desktop.\n'
-                'Send that file to the vendor to receive a new license key.'
-            )
-        _show_error('License Error', err_str)
-        return 1
-    except Exception:
-        _write_debug('Unexpected error:\n' + traceback.format_exc())
-        _show_error('Error', 'Unexpected error - see debug.txt')
-        return 1
-
-    try:
-        payloads = _find_payloads()
-        if not payloads:
-            raise ValueError('No encrypted payloads found (payload_*.enc / payload_*.meta missing).')
-
-        if '--list' in CLI_ARGS:
-            for name in sorted(payloads):
-                print(name)
-            return 0
-
-        run_names = [a.split('=', 1)[1] for a in CLI_ARGS if a.startswith('--run=')]
-        if run_names:
-            for name in run_names:
-                if name not in payloads:
-                    raise ValueError('Unknown program: ' + name)
-            for name in run_names:
-                code = _run_one(payloads, name)
-                print('[*] ' + name + ' exited with code ' + str(code))
-            return 0
-
-        if NO_GUI:
-            return _run_cli(payloads)
-
-        try:
-            _run_gui(payloads)
-            return 0
-        except ImportError:
-            # GUI unavailable - fall back to the text menu
-            return _run_cli(payloads)
-    except ValueError as e:
-        _show_error('Error', str(e))
-        return 1
-    except Exception:
-        _write_debug('Execution error:\n' + traceback.format_exc())
-        _show_error('Error', 'Unexpected error - see debug.txt')
-        return 1
-
-
-if __name__ == '__main__':
-    sys.exit(main())
 '''
 
         loader_source = (
